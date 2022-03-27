@@ -15,6 +15,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from transformers import top_k_top_p_filtering
+from taming.modules.transformer.linatt import LinearAttention
+from taming.modules.transformer.crossatt import CrossAttTransformerBlock
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,7 @@ class CausalSelfAttention(nn.Module):
 
     def __init__(self, config):
         super().__init__()
+        #n_embd=inner_dim=n_head*dim_head
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads
         self.key = nn.Linear(config.n_embd, config.n_embd)
@@ -101,7 +104,12 @@ class Block(nn.Module):
         super().__init__()
         self.ln1 = nn.LayerNorm(config.n_embd)
         self.ln2 = nn.LayerNorm(config.n_embd)
-        self.attn = CausalSelfAttention(config)
+        if config.linear_self_attention:
+            #TODO: Adapt LinearSelfAttention
+            self.attn = LinearSelfAttention(config,mask='causal')
+        else:
+            self.attn = CausalSelfAttention(config)
+
         self.mlp = nn.Sequential(
             nn.Linear(config.n_embd, 4 * config.n_embd),
             nn.GELU(),  # nice
@@ -125,12 +133,12 @@ class Block(nn.Module):
 class GPT(nn.Module):
     """  the full GPT language model, with a context size of block_size """
     def __init__(self, vocab_size, block_size, n_layer=12, n_head=8, n_embd=256,
-                 embd_pdrop=0., resid_pdrop=0., attn_pdrop=0., n_unmasked=0):
+                 embd_pdrop=0., resid_pdrop=0., attn_pdrop=0., n_unmasked=0, linear_self_attention=False):
         super().__init__()
         config = GPTConfig(vocab_size=vocab_size, block_size=block_size,
                            embd_pdrop=embd_pdrop, resid_pdrop=resid_pdrop, attn_pdrop=attn_pdrop,
                            n_layer=n_layer, n_head=n_head, n_embd=n_embd,
-                           n_unmasked=n_unmasked)
+                           n_unmasked=n_unmasked, linear_self_attention=linear_self_attention)
         # input embedding stem
         self.tok_emb = nn.Embedding(config.vocab_size, config.n_embd)
         self.pos_emb = nn.Parameter(torch.zeros(1, config.block_size, config.n_embd))
@@ -225,18 +233,34 @@ class DummyGPT(nn.Module):
 class CodeGPT(nn.Module):
     """Takes in semi-embeddings"""
     def __init__(self, vocab_size, block_size, in_channels, n_layer=12, n_head=8, n_embd=256,
-                 embd_pdrop=0., resid_pdrop=0., attn_pdrop=0., n_unmasked=0):
+                 embd_pdrop=0., resid_pdrop=0., attn_pdrop=0., n_unmasked=0, linear_self_attention=False, cross_attention=False):
         super().__init__()
+
         config = GPTConfig(vocab_size=vocab_size, block_size=block_size,
                            embd_pdrop=embd_pdrop, resid_pdrop=resid_pdrop, attn_pdrop=attn_pdrop,
                            n_layer=n_layer, n_head=n_head, n_embd=n_embd,
-                           n_unmasked=n_unmasked)
+                           n_unmasked=n_unmasked, linear_self_attention=linear_self_attention,
+                           cross_attention=cross_attention)
+
+        self.cross_attention = cross_attention
+
         # input embedding stem
         self.tok_emb = nn.Linear(in_channels, config.n_embd)
         self.pos_emb = nn.Parameter(torch.zeros(1, config.block_size, config.n_embd))
         self.drop = nn.Dropout(config.embd_pdrop)
+        if self.cross_attention:
+            self.context_tok_emb = nn.Linear(in_channels, config.n_embd)
+            self.context_pos_emb = nn.Parameter(torch.zeros(1, config.block_size, config.n_embd))
+            self.context_drop = nn.Dropout(config.embd_pdrop)
+
         # transformer
-        self.blocks = nn.Sequential(*[Block(config) for _ in range(config.n_layer)])
+        if self.cross_attention:
+            #TODO:Structure CrossAttBlocks without Sequential module, seems to not work with context input
+            self.blocks = nn.Sequential(*[CrossAttTransformerBlock(config) for _ in range(config.n_layer)])
+            #self.cross_att_block = CrossAttTransformerBlock(config)
+        else:
+            self.blocks = nn.Sequential(*[Block(config) for _ in range(config.n_layer)])
+
         # decoder head
         self.ln_f = nn.LayerNorm(config.n_embd)
         self.head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -257,8 +281,9 @@ class CodeGPT(nn.Module):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
 
-    def forward(self, idx, embeddings=None, targets=None):
+    def forward(self, idx, embeddings=None, targets=None, context=None):
         # forward the GPT model
+        #print('==================================forward CodeGPT\n')
         token_embeddings = self.tok_emb(idx) # each index maps to a (learnable) vector
 
         if embeddings is not None: # prepend explicit embeddings
@@ -268,8 +293,23 @@ class CodeGPT(nn.Module):
         assert t <= self.block_size, "Cannot forward, model block size is exhausted."
         position_embeddings = self.pos_emb[:, :t, :] # each position maps to a (learnable) vector
         x = self.drop(token_embeddings + position_embeddings)
-        x = self.blocks(x)
-        x = self.taming_cinln_f(x)
+
+        if self.cross_attention:
+            context_token_embeddings = self.context_tok_emb(context) # each index maps to a (learnable) vector
+            t_c = context_token_embeddings.shape[1]
+            assert t_c <= self.block_size, "Cannot forward, model block size is exhausted."
+            context_position_embeddings = self.context_pos_emb[:, :t_c, :] # each position maps to a (learnable) vector
+            context = self.context_drop(context_token_embeddings + context_position_embeddings)
+
+            #print('Before forward in CrossAttBlock=======================\n')
+            #print('x.shape: ',x.shape)
+            #TODO:Structure CrossAttBlocks without Sequential module, seems to not work with context input
+            (x, context) = self.blocks((x, context))
+            #print('x.shape: ',x.shape)
+        else:
+            x = self.blocks(x)
+        #x = self.taming_cinln_f(x)
+        x = self.ln_f(x)
         logits = self.head(x)
 
         # if we are given some desired targets also calculate the loss

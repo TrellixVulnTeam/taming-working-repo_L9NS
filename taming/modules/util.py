@@ -113,7 +113,6 @@ class Labelator(AbstractEncoder):
             return c, None, [None, None, c.long()]
         return c
 
-
 class SOSProvider(AbstractEncoder):
     # for unconditional training
     def __init__(self, sos_token, quantize_interface=True):
@@ -122,8 +121,28 @@ class SOSProvider(AbstractEncoder):
         self.quantize_interface = quantize_interface
 
     def encode(self, x):
+        print('=========================\n')
+        print('Using normal SOSProvider')
         # get batch size from data and replicate sos_token
         c = torch.ones(x.shape[0], 1)*self.sos_token
+        c = c.long().to(x.device)
+        if self.quantize_interface:
+            return c, None, [None, None, c]
+        return c
+
+class CodeGPT_SOSProvider(AbstractEncoder):
+    # for unconditional training, provides c in (batch, in_channels, h=1, w=1) shape for CodeGPT
+    def __init__(self, sos_token, quantize_interface=True):
+        super().__init__()
+        self.sos_token = sos_token
+        self.quantize_interface = quantize_interface
+
+    def encode(self, x, bchw):
+        print('=========================\n')
+        print('Using CodeGPT SOSProvider')
+        print('x.shape:',x.shape)
+        # get batch size from data and replicate sos_token
+        c = torch.ones(*bchw)*self.sos_token
         c = c.long().to(x.device)
         if self.quantize_interface:
             return c, None, [None, None, c]

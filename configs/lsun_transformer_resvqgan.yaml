@@ -1,0 +1,73 @@
+model:
+  base_learning_rate: 4.5e-06
+  target: taming.models.cond_transformer.RVQTransformer
+  params:
+    z_codebook_level: 0
+    unconditional: True
+    cond_on_prev_level: False
+    transformer_config:
+      target: taming.modules.transformer.mingpt.GPT
+      params:
+        vocab_size: 0    #Is overwritten for RVQTransformer
+        block_size: 2048
+        n_layer: 4
+        n_head: 4
+        n_embd: 16
+    first_stage_config:
+      target: taming.models.vqgan.ResidualVQModel
+      params:
+        ckpt_path: "/export/home/fmayer/pretrained_models/2022-02-01T15-55-38_vqgan_f8_openimages_n3_4-64-4096_lastonly_resumedisc/checkpoints/last.ckpt"
+        n_embed: 666
+        level_sizes:
+        - 1.0
+        - 1.0
+        - 1.0
+        layer_weights:
+        - 0.0
+        - 0.0
+        - 1.0
+        n_embeds:
+        - 4
+        - 64
+        - 4096
+        n_levels: 3
+        embed_dim: 32
+        monitor: val/rec_loss
+        ddconfig:
+          double_z: false
+          z_channels: 32
+          resolution: 256
+          in_channels: 3
+          out_ch: 3
+          ch: 128
+          ch_mult:
+          - 1
+          - 2
+          - 2
+          - 4
+          num_res_blocks: 2
+          attn_resolutions: 
+           - 32
+          dropout: 0.0
+        lossconfig:
+          target: taming.modules.losses.DummyLoss
+
+    cond_stage_config:
+      target: taming.modules.misc.coord.CoordStage
+      params:
+        n_embed: 4096
+        down_factor: 16
+
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 24
+    num_workers: 12
+    train:
+      target: taming.data.lsun.LSUNCatsTrain
+      params:
+        size: 256
+    validation:
+      target: taming.data.lsun.LSUNCatsValidation
+      params:
+        size: 256
