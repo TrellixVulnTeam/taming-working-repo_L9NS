@@ -504,7 +504,7 @@ class RVQTransformer (Net2NetTransformer):
                 quant_c, _, [_,_,indices] = self.sos_cond_stage.encode(c,bchw=(c.shape[0],self.first_stage_config.params.embed_dim,1,1))
             else:
                 quant_c, _, [_,_,indices] = self.cond_stage_model.encode(c)
-            print('quant_c.shape:',quant_c.shape)
+            #print('quant_c.shape:',quant_c.shape)
             bchw = quant_c.shape
             quant_c = einops.rearrange(quant_c, 'b c h w -> b (h w) c')
         else:
@@ -685,7 +685,7 @@ class RVQTransformer (Net2NetTransformer):
         quant_c, c_indices, c_bchw = self.encode_to_c(c)
 
         #TODO: Adapt half picture sampling to work with CodeGPT
-        if not self.cond_on_prev_level:
+        if not self.cond_on_prev_level and not self.joint_training:
             #print('Creating half sample=========')
             # create a "half"" sample
             z_start_indices = z_indices[:,:z_indices.shape[1]//2]
@@ -702,12 +702,13 @@ class RVQTransformer (Net2NetTransformer):
             x_sample = self.decode_to_img(index_sample, z_bchw)
             #print('Half sample created==========')
 
-        #print('------------Sampling-------------')
+        print('------------Sampling-------------')
         #print('quant_z.shape:,', quant_z.shape)
         #print('quant_c.shape:,', quant_c.shape)
 
+        print('weights: ',self.transformer.tok_emb.weight)
         # sample
-        if not self.cond_on_prev_level:
+        if not self.cond_on_prev_level and not self.joint_training:
             z_start_indices = z_indices[:, :0]
             index_sample = self.sample(z_start_indices, c_indices,
                                        steps=z_indices.shape[1],
@@ -727,13 +728,22 @@ class RVQTransformer (Net2NetTransformer):
                                        top_k=top_k if top_k is not None else min(100,self.transformer.config.vocab_size),
                                        callback=callback if callback is not None else lambda k: None)
             x_sample_nopix = self.decode_to_img(index_sample, z_bchw)
-            x_sample_nopix_sum = self.cond_and_pred_to_img(quant_c, index_sample, z_bchw)
+
+            #print('===================Before cond_and_pred_to_img')
+            #print('quant_c.shape:',quant_c.shape)
+            #print('index_sample.shape:',index_sample.shape)
+            if self.be_unconditional:
+                dummy_c=torch.zeros(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
+                #print('dummy_c.shape:',dummy_c.shape)
+                x_sample_nopix_sum = self.cond_and_pred_to_img(dummy_c, index_sample, z_bchw)
+            else:
+                x_sample_nopix_sum = self.cond_and_pred_to_img(quant_c, index_sample, z_bchw)
 
 
         # det sample
         z_start_indices = z_indices[:, :0]
 
-        if not self.cond_on_prev_level:
+        if not self.cond_on_prev_level and not self.joint_training:
             index_sample = self.sample(z_start_indices, c_indices,
                                        steps=z_indices.shape[1],
                                        sample=False,
@@ -746,13 +756,20 @@ class RVQTransformer (Net2NetTransformer):
                                        steps=z_indices.shape[1],
                                        sample=False,
                                        callback=callback if callback is not None else lambda k: None)
-            x_sample_det = self.decode_to_img(index_sample, z_bchw)
-            x_sample_det_sum = self.cond_and_pred_to_img(quant_c, index_sample, z_bchw)
+
+
+            if self.be_unconditional:
+                dummy_c=torch.zeros(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
+                x_sample_nopix_sum = self.cond_and_pred_to_img(dummy_c, index_sample, z_bchw)
+                #x_sample_det = self.cond_and_pred_to_img(dummy_c, index_sample, z_bchw)
+            else:
+                x_sample_nopix_sum = self.cond_and_pred_to_img(quant_c, index_sample, z_bchw)
+                #x_sample_det = self.cond_and_pred_to_img(quant_c, index_sample, z_bchw)
 
         # reconstruction
-        x_rec = self.decode_to_img(z_indices, z_bchw)
+        #x_rec = self.decode_to_img(z_indices, z_bchw)
 
-        log_resvq = self.first_stage_model.log_images(batch)
+        #log_resvq = self.first_stage_model.log_images(batch)
 
         #log["inputs"] = x
         #log["reconstructions_target_lvl_{}".format(self.z_codebook_level)] = log_resvq["reconstructions_{}".format(self.z_codebook_level)]
@@ -793,7 +810,7 @@ class RVQTransformer (Net2NetTransformer):
         #print('x_sample_nopix.shape:', x_sample_nopix.shape)
         #print('x_sample_det.shape:', x_sample_det.shape)
 
-        if self.cond_on_prev_level:
+        if self.cond_on_prev_level or self.joint_training:
             log["samples_nopix_lvl{}".format(self.z_codebook_level)] = x_sample_nopix_sum
             #log["samples_det_sum_cond"] = x_sample_det_sum
             #log["samples_nopix_only_residual"] = x_sample_nopix
@@ -808,21 +825,27 @@ class RVQTransformer (Net2NetTransformer):
 
     @torch.no_grad()
     def log_images(self, batch, temperature=None, top_k=None, callback=None, lr_interface=False, **kwargs):
+        print('==========Starting Image Logging=========')
+        print(self.transformer.head.weight)
+        print('weights: ',self.transformer.tok_emb.weight)
+
         if not self.joint_training:
             logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
 
             return logs
 
         else:
+            print('weights: ',self.transformer.tok_emb.weight)
             self.z_codebook_level = 0
             self.c_codebook_level = None
             self.be_unconditional = True
             self.use_sos_cond = True
             self.cond_on_prev_level=False
 
-            print('==========Not logging level 0')
-            #logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
-            logs = {}
+            #print('==========Not logging level 0')
+            print('weights: ',self.transformer.tok_emb.weight)
+            logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
+            #logs = {}
 
             self.be_unconditional = False
             self.use_sos_cond = False
@@ -830,10 +853,13 @@ class RVQTransformer (Net2NetTransformer):
 
             for z_lvl in range(1,self.first_stage_model.n_levels):
                 print('==========loop, z_lvl=', z_lvl)
+                print('weights: ',self.transformer.tok_emb.weight)
                 self.z_codebook_level = z_lvl
                 self.c_codebook_level = z_lvl-1
 
-                logs = {**logs, **(self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface))}
+                new_logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
+
+                logs = {**logs, **new_logs}
 
             return logs
 
@@ -845,87 +871,64 @@ class RVQTransformer (Net2NetTransformer):
             sos = torch.ones((x.shape[0],1,x.shape[2]),dtype=x.dtype, device=x.device) * self.sos_token
             x = torch.cat((sos,x),dim=1)
         else:
+            #print('sample_codegpt========================================')
+            #print('x.shape:',x.shape)
+            #print('c.shape:',c.shape)
             x = torch.cat((c,x),dim=1)
 
         block_size = self.transformer.get_block_size()
         assert not self.transformer.training
-        if self.pkeep <= 0.0:
-            # one pass suffices since input is pure noise anyway
-            assert len(x.shape)==2
-            noise_shape = (x.shape[0], steps-1)
-            #noise = torch.randint(self.transformer.config.vocab_size, noise_shape).to(x)
-            noise = c.clone()[:,x.shape[1]-c.shape[1]:-1]
-            x = torch.cat((x,noise),dim=1)
-            logits, _ = self.transformer(x)
-            # take all logits for now and scale by temp
-            logits = logits / temperature
+
+        #print('Before loop in sample function')
+        #print('Steps= ',steps)
+        x_indices = torch.zeros((x.shape[0],0),device=x.device,dtype=torch.long)
+        for k in range(steps):
+            callback(k)
+            assert x.size(1) <= block_size # make sure model can see conditioning
+            #x_cond = x if x.size(1) <= block_size else x[:, -block_size:]  # crop context if needed
+
+            if self.transformer.cross_attention:
+                #print('In sample loop, x.shape: ',x.shape)
+                #print('In sample loop, c.shape: ',c.shape)
+                logits, _ = self.transformer(x, context=c)
+            else:
+                #print('Sample, x=',x)
+                #print('Sample, x.shape=',x.shape)
+                logits, _ = self.transformer(x)
+                #print('Sample, logits=', logits)
+
+            #print('in sample, logits.shape: ', logits.shape)
+            # pluck the logits at the final step and scale by temperature
+            logits = logits[:, -1, :] / temperature
             # optionally crop probabilities to only the top k options
             if top_k is not None:
                 logits = self.top_k_logits(logits, top_k)
             # apply softmax to convert to probabilities
-            print('probs:',probs)
             probs = F.softmax(logits, dim=-1)
+           # print('probs:',probs)
             # sample from the distribution or take the most likely
             if sample:
-                shape = probs.shape
-                probs = probs.reshape(shape[0]*shape[1],shape[2])
                 ix = torch.multinomial(probs, num_samples=1)
-                probs = probs.reshape(shape[0],shape[1],shape[2])
-                ix = ix.reshape(shape[0],shape[1])
             else:
                 _, ix = torch.topk(probs, k=1, dim=-1)
-            # cut off conditioning
-            x = ix[:, c.shape[1]-1:]
+
+            #print('ix.shape:',ix.shape)
+            #print('x_indices.shape:', x_indices.shape)
+            x_indices=torch.cat((x_indices,ix), dim=1)
+            bhwc=(ix.shape[0],1,1,x.shape[2])
+            ix_quant = self.first_stage_model.quantizers[self.z_codebook_level].get_codebook_entry(ix,shape=bhwc)
+            #return shape is bchw
+            #print('ix_quant.shape:',ix_quant.shape)
+            ix_quant=einops.rearrange(ix_quant, 'b c h w  -> b (h w) c')
+            # append to the sequence and continue
+            #print('x.shape:',x.shape)
+            #print('ix_quant.shape:',ix_quant.shape)
+            x = torch.cat((x, ix_quant), dim=1)
+        if self.transformer.cross_attention:
+            # cut off sos token
+            x = x[:,1:,:]
         else:
-            #print('Before loop in sample function')
-            #print('Steps= ',steps)
-            x_indices = torch.zeros((x.shape[0],0),device=x.device,dtype=torch.long)
-            for k in range(steps):
-                callback(k)
-                assert x.size(1) <= block_size # make sure model can see conditioning
-                #x_cond = x if x.size(1) <= block_size else x[:, -block_size:]  # crop context if needed
-
-                if self.transformer.cross_attention:
-                    #print('In sample loop, x.shape: ',x.shape)
-                    #print('In sample loop, c.shape: ',c.shape)
-                    logits, _ = self.transformer(x, context=c)
-                else:
-                    print('Sample, x=',x)
-                    logits, _ = self.transformer(x)
-                    print('Sample, logits=', logits)
-
-                #print('in sample, logits.shape: ', logits.shape)
-                # pluck the logits at the final step and scale by temperature
-                logits = logits[:, -1, :] / temperature
-                # optionally crop probabilities to only the top k options
-                if top_k is not None:
-                    logits = self.top_k_logits(logits, top_k)
-                # apply softmax to convert to probabilities
-                probs = F.softmax(logits, dim=-1)
-               # print('probs:',probs)
-                # sample from the distribution or take the most likely
-                if sample:
-                    ix = torch.multinomial(probs, num_samples=1)
-                else:
-                    _, ix = torch.topk(probs, k=1, dim=-1)
-
-                #print('ix.shape:',ix.shape)
-                #print('x_indices.shape:', x_indices.shape)
-                x_indices=torch.cat((x_indices,ix), dim=1)
-                bhwc=(ix.shape[0],1,1,x.shape[2])
-                ix_quant = self.first_stage_model.quantizers[self.z_codebook_level].get_codebook_entry(ix,shape=bhwc)
-                #return shape is bchw
-                #print('ix_quant.shape:',ix_quant.shape)
-                ix_quant=einops.rearrange(ix_quant, 'b c h w  -> b (h w) c')
-                # append to the sequence and continue
-                #print('x.shape:',x.shape)
-                #print('ix_quant.shape:',ix_quant.shape)
-                x = torch.cat((x, ix_quant), dim=1)
-            if self.transformer.cross_attention:
-                # cut off sos token
-                x = x[:,1:,:]
-            else:
-                # cut off conditioning
-                x = x[:, c.shape[1]:,:]
+            # cut off conditioning
+            x = x[:, c.shape[1]:,:]
         #print('return x_indices, shape:',x_indices.shape)
         return x_indices

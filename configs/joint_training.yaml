@@ -67,8 +67,8 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 6
-    num_workers: 6
+    batch_size: 2
+    num_workers: 2
     train:
       target: taming.data.lsun.LSUNChurchesTrain
       params:

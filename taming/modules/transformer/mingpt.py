@@ -273,6 +273,8 @@ class CodeGPT(nn.Module):
         return self.block_size
 
     def _init_weights(self, module):
+        #print('===========_init_weights called=============')
+        #print('module=',module)
         if isinstance(module, (nn.Linear, nn.Embedding)):
             module.weight.data.normal_(mean=0.0, std=0.02)
             if isinstance(module, nn.Linear) and module.bias is not None:
@@ -282,9 +284,19 @@ class CodeGPT(nn.Module):
             module.weight.data.fill_(1.0)
 
     def forward(self, idx, embeddings=None, targets=None, context=None):
-        # forward the GPT model
+        # forward the CodeGPT model
         #print('==================================forward CodeGPT\n')
+        #print('idx.max=',idx.max())
+        #print('idx.min=',idx.min())
+        #print('tok_emb.weight=',self.tok_emb.weight)
+        #print('tok_emb.bias=',self.tok_emb.bias)
+
+        x_test=torch.zeros_like(idx)
+        te_test=self.tok_emb(x_test)
+        #print('te_test:',te_test)
+
         token_embeddings = self.tok_emb(idx) # each index maps to a (learnable) vector
+        #print('token_emb=',token_embeddings)
 
         if embeddings is not None: # prepend explicit embeddings
             token_embeddings = torch.cat((embeddings, token_embeddings), dim=1)
@@ -292,6 +304,7 @@ class CodeGPT(nn.Module):
         t = token_embeddings.shape[1]
         assert t <= self.block_size, "Cannot forward, model block size is exhausted."
         position_embeddings = self.pos_emb[:, :t, :] # each position maps to a (learnable) vector
+        #print('pos_emb=',position_embeddings)
         x = self.drop(token_embeddings + position_embeddings)
 
         if self.cross_attention:
@@ -307,9 +320,12 @@ class CodeGPT(nn.Module):
             (x, context) = self.blocks((x, context))
             #print('x.shape: ',x.shape)
         else:
+            #print('Before self.blocks(x): x=',x)
             x = self.blocks(x)
         #x = self.taming_cinln_f(x)
+        #print('Before self.ln_f(x): x=',x)
         x = self.ln_f(x)
+        #print('Before self.head(x): x=',x)
         logits = self.head(x)
 
         # if we are given some desired targets also calculate the loss

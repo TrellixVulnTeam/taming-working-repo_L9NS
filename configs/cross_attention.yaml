@@ -8,10 +8,10 @@ model:
     transformer_config:
       target: taming.modules.transformer.mingpt.CodeGPT
       params:
-        cross_attention: False
+        cross_attention: True
         in_channels: 4
         vocab_size: 0    #Is overwritten for RVQTransformer
-        block_size: 512
+        block_size: 257
         n_layer: 16
         n_head: 16
         n_embd: 1024
