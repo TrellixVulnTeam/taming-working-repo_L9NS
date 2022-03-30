@@ -140,8 +140,7 @@ class CodeGPT_SOSProvider(AbstractEncoder):
     def encode(self, x, bchw):
         print('=========================\n')
         print('Using CodeGPT SOSProvider')
-        print('x.shape:',x.shape)
-        # get batch size from data and replicate sos_token
+        # get shape from data and replicate sos_token
         c = torch.ones(*bchw)*self.sos_token
         c = c.long().to(x.device)
         if self.quantize_interface:

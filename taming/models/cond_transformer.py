@@ -428,6 +428,16 @@ class RVQTransformer (Net2NetTransformer):
             self.sos_cond_stage = CodeGPT_SOSProvider(self.sos_token)
         self.use_sos_cond = False
 
+    def get_down_factor(self):
+        ch_mult = self.first_stage_config.params.ddconfig.ch_mult
+        down_f = 2**(len(ch_mult)-1)
+        return down_f
+
+    def get_hidden_dim(self):
+        down_f=self.get_down_factor()
+        res = self.first_stage_config.params.ddconfig.resolution
+        assert res%down_f==0
+        return res//down_f
 
     def decode_to_img(self, index, zshape):
         #print('quant_pred mean, std:',quant_pred.mean())
@@ -501,7 +511,15 @@ class RVQTransformer (Net2NetTransformer):
             c = F.interpolate(c, size=(self.downsample_cond_size, self.downsample_cond_size))
         if self.be_unconditional:
             if self.use_sos_cond:
-                quant_c, _, [_,_,indices] = self.sos_cond_stage.encode(c,bchw=(c.shape[0],self.first_stage_config.params.embed_dim,1,1))
+                print('======generating SOS for unconditional case========')
+                print('c.shape:',c.shape)
+                hidden_dim=self.get_hidden_dim()
+                print('get_hidden_dim:',hidden_dim)
+
+                #Then replace them with sos tokens for dummy cond sequence
+                bs=c.shape[0]
+                quant_c, _, [_,_,indices] = self.sos_cond_stage.encode(c,bchw=(bs,self.first_stage_config.params.embed_dim,hidden_dim,hidden_dim))
+
             else:
                 quant_c, _, [_,_,indices] = self.cond_stage_model.encode(c)
             #print('quant_c.shape:',quant_c.shape)
@@ -769,13 +787,13 @@ class RVQTransformer (Net2NetTransformer):
         # reconstruction
         #x_rec = self.decode_to_img(z_indices, z_bchw)
 
-        #log_resvq = self.first_stage_model.log_images(batch)
+        log_resvq = self.first_stage_model.log_images(batch)
 
-        #log["inputs"] = x
-        #log["reconstructions_target_lvl_{}".format(self.z_codebook_level)] = log_resvq["reconstructions_{}".format(self.z_codebook_level)]
+        log["inputs"] = x
+        log["reconstructions_target_lvl_{}".format(self.z_codebook_level)] = log_resvq["reconstructions_{}".format(self.z_codebook_level)]
 
-        #if self.cond_on_prev_level:
-            #log["reconstructions_cond_lvl_{}".format(self.c_codebook_level)] = log_resvq["reconstructions_{}".format(self.c_codebook_level)]
+        if self.cond_on_prev_level:
+            log["reconstructions_cond_lvl_{}".format(self.c_codebook_level)] = log_resvq["reconstructions_{}".format(self.c_codebook_level)]
             #log["reconstructions_only_lvl_{}".format(self.z_codebook_level)] = x_rec
 
 
@@ -826,8 +844,8 @@ class RVQTransformer (Net2NetTransformer):
     @torch.no_grad()
     def log_images(self, batch, temperature=None, top_k=None, callback=None, lr_interface=False, **kwargs):
         print('==========Starting Image Logging=========')
-        print(self.transformer.head.weight)
-        print('weights: ',self.transformer.tok_emb.weight)
+        print('head.weight(decoder):',self.transformer.head.weight)
+        print('tok_emb.weight: ',self.transformer.tok_emb.weight)
 
         if not self.joint_training:
             logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
@@ -835,7 +853,7 @@ class RVQTransformer (Net2NetTransformer):
             return logs
 
         else:
-            print('weights: ',self.transformer.tok_emb.weight)
+            print('tok_emb.weight: ',self.transformer.tok_emb.weight)
             self.z_codebook_level = 0
             self.c_codebook_level = None
             self.be_unconditional = True
@@ -843,7 +861,7 @@ class RVQTransformer (Net2NetTransformer):
             self.cond_on_prev_level=False
 
             #print('==========Not logging level 0')
-            print('weights: ',self.transformer.tok_emb.weight)
+            print('tok_emb.weight: ',self.transformer.tok_emb.weight)
             logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
             #logs = {}
 
@@ -853,7 +871,7 @@ class RVQTransformer (Net2NetTransformer):
 
             for z_lvl in range(1,self.first_stage_model.n_levels):
                 print('==========loop, z_lvl=', z_lvl)
-                print('weights: ',self.transformer.tok_emb.weight)
+                print('tok_emb.weight: ',self.transformer.tok_emb.weight)
                 self.z_codebook_level = z_lvl
                 self.c_codebook_level = z_lvl-1
 
@@ -875,6 +893,7 @@ class RVQTransformer (Net2NetTransformer):
             #print('x.shape:',x.shape)
             #print('c.shape:',c.shape)
             x = torch.cat((c,x),dim=1)
+            assert torch.isnan(x).sum()==0
 
         block_size = self.transformer.get_block_size()
         assert not self.transformer.training
@@ -883,6 +902,7 @@ class RVQTransformer (Net2NetTransformer):
         #print('Steps= ',steps)
         x_indices = torch.zeros((x.shape[0],0),device=x.device,dtype=torch.long)
         for k in range(steps):
+            assert torch.isnan(x).sum()==0
             callback(k)
             assert x.size(1) <= block_size # make sure model can see conditioning
             #x_cond = x if x.size(1) <= block_size else x[:, -block_size:]  # crop context if needed

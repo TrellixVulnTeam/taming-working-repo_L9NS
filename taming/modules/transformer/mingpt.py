@@ -285,18 +285,18 @@ class CodeGPT(nn.Module):
 
     def forward(self, idx, embeddings=None, targets=None, context=None):
         # forward the CodeGPT model
-        #print('==================================forward CodeGPT\n')
-        #print('idx.max=',idx.max())
-        #print('idx.min=',idx.min())
-        #print('tok_emb.weight=',self.tok_emb.weight)
-        #print('tok_emb.bias=',self.tok_emb.bias)
+        print('==================================forward CodeGPT\n')
+        print('idx.max=',idx.max())
+        print('idx.min=',idx.min())
+        print('tok_emb.weight=',self.tok_emb.weight)
+        print('tok_emb.bias=',self.tok_emb.bias)
 
         x_test=torch.zeros_like(idx)
         te_test=self.tok_emb(x_test)
         #print('te_test:',te_test)
 
         token_embeddings = self.tok_emb(idx) # each index maps to a (learnable) vector
-        #print('token_emb=',token_embeddings)
+        print('token_emb=',token_embeddings)
 
         if embeddings is not None: # prepend explicit embeddings
             token_embeddings = torch.cat((embeddings, token_embeddings), dim=1)
@@ -304,7 +304,7 @@ class CodeGPT(nn.Module):
         t = token_embeddings.shape[1]
         assert t <= self.block_size, "Cannot forward, model block size is exhausted."
         position_embeddings = self.pos_emb[:, :t, :] # each position maps to a (learnable) vector
-        #print('pos_emb=',position_embeddings)
+        print('pos_emb=',position_embeddings)
         x = self.drop(token_embeddings + position_embeddings)
 
         if self.cross_attention:
