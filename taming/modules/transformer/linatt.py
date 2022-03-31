@@ -1,11 +1,15 @@
 import torch.nn as nn
+import torch
 from einops import rearrange, repeat
+from inspect import isfunction
 
 import fast_transformers as ft
 from fast_transformers import masking
 from fast_transformers import attention
 
 
+def exists(val):
+    return val is not None
 
 def default(val, d):
     if exists(val):
@@ -13,18 +17,36 @@ def default(val, d):
     return d() if isfunction(d) else d
 
 
-
 class LinearAttention(nn.Module):
     """
     - based on Jonas' wrapper of fast-transformer's (https://arxiv.org/pdf/2006.16236.pdf) linear attention
     - modified to match the `CrossAttention` interface
     """
-    def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0., mask=None):
+    def __init__(self, config, mask):
         super().__init__()
-        inner_dim = dim_head * heads
-        context_dim = default(context_dim, query_dim)
 
-        self.n_heads = heads
+        #n_embd=inner_dim=n_head*dim_head
+        assert config.n_embd % config.n_head == 0
+        dim_head = config.n_embd // config.n_head
+
+        query_dim = config.n_embd
+
+        if hasattr(config,'context_dim'):
+            context_dim = default(config.context_dim, query_dim)
+        else: 
+            context_dim = query_dim
+
+        #if hasattr(config,'mask'):
+        #    mask = config.mask
+        #else:
+        #    mask = None
+
+        if hasattr(config,'dropout'):
+            dropout = config.dropout
+        else:
+            dropout = 0.
+
+        self.n_heads = config.n_head
         self.size = dim_head
 
         if mask is None:
@@ -37,16 +59,17 @@ class LinearAttention(nn.Module):
         else:
             ValueError(f"Unknown mask type '{mask}'")
 
-        self.to_q = nn.Linear(query_dim, inner_dim)
-        self.to_k = nn.Linear(context_dim, inner_dim)
-        self.to_v = nn.Linear(context_dim, inner_dim)
+        self.to_q = nn.Linear(query_dim, config.n_embd)
+        self.to_k = nn.Linear(context_dim, config.n_embd)
+        self.to_v = nn.Linear(context_dim, config.n_embd)
 
         self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, query_dim),
+            nn.Linear(config.n_embd, query_dim),
             nn.Dropout(dropout)
         )
 
-    def forward(self, x, context=None):
+    #layer_past not used, for compatibility with CauselSelfAttention (baseline module)
+    def forward(self, x, context=None,layer_past=None):
         q = self.to_q(x)
         context = default(context, x)
         k = self.to_k(context)
@@ -57,10 +80,16 @@ class LinearAttention(nn.Module):
         B, S, _, _ = q.shape
         _, T, _, _ = v.shape
 
-        q_l_mask = ft.masking.LengthMask(q.new_full((B,), S, dtype=torch.int64))
-        k_l_mask = ft.masking.LengthMask(k.new_full((B,), T, dtype=torch.int64))
+        q_l_mask = ft.masking.LengthMask(q.new_full((B,), S, dtype=torch.int64),device=x.device)
+        k_l_mask = ft.masking.LengthMask(k.new_full((B,), T, dtype=torch.int64),device=x.device)
 
+        #print('self.attn:',self.attn)
+        #print('self.mask:',self.mask)
+        #print('(q,k,v):',(q,k,v))
+        #print('q_l_mask:',q_l_mask)
+        #print('k_l_mask:',k_l_mask)
+        #print('q.device:',q.device)
         res = self.attn(q, k, v, self.mask, query_lengths=q_l_mask, key_lengths=k_l_mask)
         res = res.reshape(B, S, self.n_heads * self.size)
         res = self.to_out(res)
-        return res
+        return res, None

@@ -95,7 +95,7 @@ class CausalSelfAttention(nn.Module):
 
         # output projection
         y = self.resid_drop(self.proj(y))
-        return y, present   # TODO: check that this does not break anything
+        return y, present   
 
 
 class Block(nn.Module):
@@ -106,7 +106,7 @@ class Block(nn.Module):
         self.ln2 = nn.LayerNorm(config.n_embd)
         if config.linear_self_attention:
             #TODO: Adapt LinearSelfAttention
-            self.attn = LinearSelfAttention(config,mask='causal')
+            self.attn = LinearAttention(config, mask='causal')
         else:
             self.attn = CausalSelfAttention(config)
 
@@ -118,9 +118,11 @@ class Block(nn.Module):
         )
 
     def forward(self, x, layer_past=None, return_present=False):
-        # TODO: check that training still works
         if return_present: assert not self.training
         # layer past: tuple of length two with B, nh, T, hs
+        #print('self.attn:',self.attn)
+        #print('self.ln1:',self.ln1)
+        #print('x=',x)
         attn, present = self.attn(self.ln1(x), layer_past=layer_past)
 
         x = x + attn
@@ -260,7 +262,6 @@ class CodeGPT(nn.Module):
 
         # transformer
         if self.cross_attention:
-            #TODO:Structure CrossAttBlocks without Sequential module, seems to not work with context input
             self.blocks = nn.Sequential(*[CrossAttTransformerBlock(config) for _ in range(config.n_layer)])
             #self.cross_att_block = CrossAttTransformerBlock(config)
         else:
@@ -333,7 +334,6 @@ class CodeGPT(nn.Module):
 
             #print('Before forward in CrossAttBlock=======================\n')
             #print('x.shape: ',x.shape)
-            #TODO:Structure CrossAttBlocks without Sequential module, seems to not work with context input
             (x, context) = self.blocks((x, context))
             #print('x.shape: ',x.shape)
         else:

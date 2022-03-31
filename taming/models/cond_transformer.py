@@ -398,11 +398,12 @@ class RVQTransformer (Net2NetTransformer):
                  joint_training=False,
                  ):
 
-        self.first_stage_config=first_stage_config
-        self.transformer_config=transformer_config
         #Adjust vocab size of transformer to that of the chosen codebook level
         self.vocab_size=first_stage_config.params.n_embeds[z_codebook_level]
         transformer_config.params.vocab_size=self.vocab_size
+
+        self.first_stage_config=first_stage_config
+        self.transformer_config=transformer_config
 
         self.cond_on_prev_level = cond_on_prev_level
         self.joint_training = joint_training
@@ -428,6 +429,9 @@ class RVQTransformer (Net2NetTransformer):
         if self.joint_training:
             self.sos_cond_stage = CodeGPT_SOSProvider(self.sos_token)
         self.use_sos_cond = False
+
+        print('self.device=',self.device)
+        #self.transformer_config.params.device=self.device
 
     def get_down_factor(self):
         ch_mult = self.first_stage_config.params.ddconfig.ch_mult

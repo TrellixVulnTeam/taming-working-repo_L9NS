@@ -255,9 +255,12 @@ class ResidualVQLPIPSWithDiscriminator(nn.Module):
 
             try:
                 d_weight = self.calculate_adaptive_weight(nll_loss, g_loss, last_layer=last_layer)
-            except RuntimeError:
-                assert not self.training
-                d_weight = torch.tensor(0.0)
+            except RuntimeError as e:
+                if self.training:
+                    print(e)
+                    raise RuntimeError
+                else:
+                    d_weight = torch.tensor(0.0)
 
             disc_factor = adopt_weight(self.disc_factor, global_step, threshold=self.discriminator_iter_start)
             loss = nll_loss + d_weight * disc_factor * g_loss + self.codebook_weight * codebook_losses.mean()
