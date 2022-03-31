@@ -403,13 +403,14 @@ class RVQTransformer (Net2NetTransformer):
         #Adjust vocab size of transformer to that of the chosen codebook level
         self.vocab_size=first_stage_config.params.n_embeds[z_codebook_level]
         transformer_config.params.vocab_size=self.vocab_size
-        print('Constructing RVQTransformer object. transformer_config: ', transformer_config)
 
         self.cond_on_prev_level = cond_on_prev_level
         self.joint_training = joint_training
         self.z_codebook_level = z_codebook_level
         self.c_codebook_level = z_codebook_level-1 if z_codebook_level>0 else None
 
+
+        print('Constructing RVQTransformer object. transformer_config: ', transformer_config)
         super().__init__(
                  transformer_config,
                  first_stage_config,
@@ -468,18 +469,37 @@ class RVQTransformer (Net2NetTransformer):
         quant_c = einops.rearrange(quant_c,'b (h w) c -> b c h w', h=bhwc[1], w=bhwc[2])
         #print('quant_c.shape:',quant_c.shape)
         #print('quant_pred.shape:',quant_pred.shape)
-        quant_sum = quant_c + quant_pred
+        if self.be_unconditional:
+            quant_sum = quant_pred
+        else:
+            quant_sum = quant_c + quant_pred
         x = self.first_stage_model.decode(quant_sum)
         return x
+
+    def get_zlevel_one_hot(self,device):
+        z_level_tensor=torch.ones((1),dtype=torch.long,device=device)*self.z_codebook_level
+        return torch.nn.functional.one_hot(z_level_tensor, num_classes=self.first_stage_config.params.n_levels).float()
+
+    def append_level_encoding(self, x):
+        level_encoding=self.get_zlevel_one_hot(quant_z.device)
+        print(level_encoding)
+        level_encoding=level_encoding.expand(x.shape[0],x.shape[1],-1)
+        print(level_encoding.shape)
+        quant_z = torch.cat((quant_z,level_encoding), dim=2)
+        print(quant_z.shape)
+
 
     @torch.no_grad()
     def encode_to_z(self, x, codebook_level=None):
         if codebook_level is None:
             codebook_level=self.z_codebook_level
+
         #print('------------------------encode_to_z called-------------------------------')
+        #print('x.shape:',x.shape)
         #print(self.z_codebook_level)
         #print(self.first_stage_model.quantizers[self.z_codebook_level])
         pre_quant = self.first_stage_model.encode_to_prequant(x)
+        #print('pre_quant.shape:',pre_quant.shape)
         all_quantized, all_indices, all_losses = self.first_stage_model.make_quantizations(pre_quant)
         #print(len(all_indices),all_indices[0].shape)
         #print(len(all_quantized),all_quantized[0].shape)
@@ -511,10 +531,10 @@ class RVQTransformer (Net2NetTransformer):
             c = F.interpolate(c, size=(self.downsample_cond_size, self.downsample_cond_size))
         if self.be_unconditional:
             if self.use_sos_cond:
-                print('======generating SOS for unconditional case========')
-                print('c.shape:',c.shape)
+                #print('======generating SOS for unconditional case========')
+                #print('c.shape:',c.shape)
                 hidden_dim=self.get_hidden_dim()
-                print('get_hidden_dim:',hidden_dim)
+                #print('get_hidden_dim:',hidden_dim)
 
                 #Then replace them with sos tokens for dummy cond sequence
                 bs=c.shape[0]
@@ -602,6 +622,12 @@ class RVQTransformer (Net2NetTransformer):
         #print('c_quant.shape:',c_quant.shape)
         #print('z_quant.shape:',z_quant.shape)
 
+        if self.joint_training:
+            zlevel_encoding=self.get_zlevel_one_hot(x.device)
+            #zlevel_encoding=zlevel_encoding.expand(x.shape[0],x.shape[1],-1)
+        else:
+            zlevel_encoding=None
+
         if not self.transformer.cross_attention:
             if self.cond_on_prev_level:
                 cz_quants = torch.cat((c_quant, z_quant), dim=1)
@@ -616,9 +642,13 @@ class RVQTransformer (Net2NetTransformer):
                 target = z_indices
                 #print('target.shape: ',target.shape)
                 #print('cz_quants.shape:', cz_quants.shape)
-                logits, _ = self.transformer(cz_quants[:,:-1,:])
+
+                logits, _ = self.transformer(cz_quants[:,:-1,:], zlevel_one_hot=zlevel_encoding)
                 #print('logits.shape: ',logits.shape)
+
+                # cut off conditioning outputs - output i corresponds to p(z_i | z_{<i}, c)
                 logits = logits[:, c_quant.shape[1]-1:]
+
                 #print('logits.shape: ',logits.shape)
             else:
                 # target includes all sequence elements (no need to handle first one
@@ -627,7 +657,9 @@ class RVQTransformer (Net2NetTransformer):
                 #print('target.shape: ',target.shape)
                 # make the prediction
                 #print('cz_indices.shape:', cz_indices.shape)
-                logits, _ = self.transformer(cz_indices[:, :-1])
+
+                logits, _ = self.transformer(cz_indices[:, :-1],zlevel_one_hot=zlevel_encoding)
+
                 # cut off conditioning outputs - output i corresponds to p(z_i | z_{<i}, c)
                 logits = logits[:, c_indices.shape[1]-1:]
 
@@ -637,11 +669,11 @@ class RVQTransformer (Net2NetTransformer):
                 #print('====Before forward')
                 #print('z_quant.shape: ',z_quant.shape)
                 #print('c_quant.shape: ',c_quant.shape)
-                logits, _ = self.transformer(z_quant[:,:-1,:], context = c_quant)
+                logits, _ = self.transformer(z_quant[:,:-1,:], context = c_quant,zlevel_one_hot=zlevel_encoding)
                 #print('logits.shape: ',logits.shape)
             else:
                 target = z_indices
-                logits, _ = self.transformer(z_indices[:, :-1], context = a_indices)
+                logits, _ = self.transformer(z_indices[:, :-1], context = a_indices,zlevel_one_hot=zlevel_encoding)
 
 
         return logits, target
@@ -671,7 +703,7 @@ class RVQTransformer (Net2NetTransformer):
                 x, c = self.get_xc(batch)
                 logits, target = self(x, c)
                 #print(logits)
-                print(target.max())
+                #print(target.max())
                 loss += F.cross_entropy(logits.reshape(-1, logits.size(-1)), target.reshape(-1))
 
         else:
@@ -720,11 +752,11 @@ class RVQTransformer (Net2NetTransformer):
             x_sample = self.decode_to_img(index_sample, z_bchw)
             #print('Half sample created==========')
 
-        print('------------Sampling-------------')
+        #print('------------Sampling-------------')
         #print('quant_z.shape:,', quant_z.shape)
         #print('quant_c.shape:,', quant_c.shape)
 
-        print('weights: ',self.transformer.tok_emb.weight)
+        #print('weights: ',self.transformer.tok_emb.weight)
         # sample
         if not self.cond_on_prev_level and not self.joint_training:
             z_start_indices = z_indices[:, :0]
@@ -751,7 +783,7 @@ class RVQTransformer (Net2NetTransformer):
             #print('quant_c.shape:',quant_c.shape)
             #print('index_sample.shape:',index_sample.shape)
             if self.be_unconditional:
-                dummy_c=torch.zeros(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
+                dummy_c = self.sos_token*torch.ones(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
                 #print('dummy_c.shape:',dummy_c.shape)
                 x_sample_nopix_sum = self.cond_and_pred_to_img(dummy_c, index_sample, z_bchw)
             else:
@@ -777,7 +809,7 @@ class RVQTransformer (Net2NetTransformer):
 
 
             if self.be_unconditional:
-                dummy_c=torch.zeros(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
+                dummy_c = self.sos_token*torch.ones(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
                 x_sample_nopix_sum = self.cond_and_pred_to_img(dummy_c, index_sample, z_bchw)
                 #x_sample_det = self.cond_and_pred_to_img(dummy_c, index_sample, z_bchw)
             else:
@@ -788,11 +820,10 @@ class RVQTransformer (Net2NetTransformer):
         #x_rec = self.decode_to_img(z_indices, z_bchw)
 
         log_resvq = self.first_stage_model.log_images(batch)
-
         log["inputs"] = x
         log["reconstructions_target_lvl_{}".format(self.z_codebook_level)] = log_resvq["reconstructions_{}".format(self.z_codebook_level)]
 
-        if self.cond_on_prev_level:
+        if self.cond_on_prev_level and not self.joint_training:
             log["reconstructions_cond_lvl_{}".format(self.c_codebook_level)] = log_resvq["reconstructions_{}".format(self.c_codebook_level)]
             #log["reconstructions_only_lvl_{}".format(self.z_codebook_level)] = x_rec
 
@@ -844,8 +875,8 @@ class RVQTransformer (Net2NetTransformer):
     @torch.no_grad()
     def log_images(self, batch, temperature=None, top_k=None, callback=None, lr_interface=False, **kwargs):
         print('==========Starting Image Logging=========')
-        print('head.weight(decoder):',self.transformer.head.weight)
-        print('tok_emb.weight: ',self.transformer.tok_emb.weight)
+        #print('head.weight(decoder):',self.transformer.head.weight)
+        #print('tok_emb.weight: ',self.transformer.tok_emb.weight)
 
         if not self.joint_training:
             logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
@@ -853,7 +884,7 @@ class RVQTransformer (Net2NetTransformer):
             return logs
 
         else:
-            print('tok_emb.weight: ',self.transformer.tok_emb.weight)
+            #print('tok_emb.weight: ',self.transformer.tok_emb.weight)
             self.z_codebook_level = 0
             self.c_codebook_level = None
             self.be_unconditional = True
@@ -861,7 +892,7 @@ class RVQTransformer (Net2NetTransformer):
             self.cond_on_prev_level=False
 
             #print('==========Not logging level 0')
-            print('tok_emb.weight: ',self.transformer.tok_emb.weight)
+            #print('tok_emb.weight: ',self.transformer.tok_emb.weight)
             logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
             #logs = {}
 
@@ -871,7 +902,7 @@ class RVQTransformer (Net2NetTransformer):
 
             for z_lvl in range(1,self.first_stage_model.n_levels):
                 print('==========loop, z_lvl=', z_lvl)
-                print('tok_emb.weight: ',self.transformer.tok_emb.weight)
+                #print('tok_emb.weight: ',self.transformer.tok_emb.weight)
                 self.z_codebook_level = z_lvl
                 self.c_codebook_level = z_lvl-1
 
@@ -895,6 +926,11 @@ class RVQTransformer (Net2NetTransformer):
             x = torch.cat((c,x),dim=1)
             assert torch.isnan(x).sum()==0
 
+        if self.joint_training:
+            zlevel_encoding=self.get_zlevel_one_hot(x.device)
+        else:
+            zlevel_encoding=None
+
         block_size = self.transformer.get_block_size()
         assert not self.transformer.training
 
@@ -910,11 +946,11 @@ class RVQTransformer (Net2NetTransformer):
             if self.transformer.cross_attention:
                 #print('In sample loop, x.shape: ',x.shape)
                 #print('In sample loop, c.shape: ',c.shape)
-                logits, _ = self.transformer(x, context=c)
+                logits, _ = self.transformer(x, context=c, zlevel_one_hot=zlevel_encoding)
             else:
                 #print('Sample, x=',x)
                 #print('Sample, x.shape=',x.shape)
-                logits, _ = self.transformer(x)
+                logits, _ = self.transformer(x, zlevel_one_hot=zlevel_encoding)
                 #print('Sample, logits=', logits)
 
             #print('in sample, logits.shape: ', logits.shape)

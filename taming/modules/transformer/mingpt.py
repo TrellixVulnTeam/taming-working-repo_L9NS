@@ -233,7 +233,7 @@ class DummyGPT(nn.Module):
 class CodeGPT(nn.Module):
     """Takes in semi-embeddings"""
     def __init__(self, vocab_size, block_size, in_channels, n_layer=12, n_head=8, n_embd=256,
-                 embd_pdrop=0., resid_pdrop=0., attn_pdrop=0., n_unmasked=0, linear_self_attention=False, cross_attention=False):
+                 embd_pdrop=0., resid_pdrop=0., attn_pdrop=0., n_unmasked=0, linear_self_attention=False, cross_attention=False, n_codebook_levels=None):
         super().__init__()
 
         config = GPTConfig(vocab_size=vocab_size, block_size=block_size,
@@ -243,15 +243,20 @@ class CodeGPT(nn.Module):
                            cross_attention=cross_attention)
 
         self.cross_attention = cross_attention
+        self.n_codebook_levels=n_codebook_levels
 
         # input embedding stem
         self.tok_emb = nn.Linear(in_channels, config.n_embd)
         self.pos_emb = nn.Parameter(torch.zeros(1, config.block_size, config.n_embd))
+        if n_codebook_levels is not None:
+            self.level_emb = nn.Linear(n_codebook_levels, config.n_embd)
         self.drop = nn.Dropout(config.embd_pdrop)
         if self.cross_attention:
             self.context_tok_emb = nn.Linear(in_channels, config.n_embd)
             self.context_pos_emb = nn.Parameter(torch.zeros(1, config.block_size, config.n_embd))
             self.context_drop = nn.Dropout(config.embd_pdrop)
+            if n_codebook_levels is not None:
+                self.context_level_emb = nn.Linear(n_codebook_levels, config.n_embd)
 
         # transformer
         if self.cross_attention:
@@ -283,20 +288,22 @@ class CodeGPT(nn.Module):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
 
-    def forward(self, idx, embeddings=None, targets=None, context=None):
+    def forward(self, idx, embeddings=None, targets=None, context=None, zlevel_one_hot=None):
         # forward the CodeGPT model
-        print('==================================forward CodeGPT\n')
-        print('idx.max=',idx.max())
-        print('idx.min=',idx.min())
-        print('tok_emb.weight=',self.tok_emb.weight)
-        print('tok_emb.bias=',self.tok_emb.bias)
+        #print('==================================forward CodeGPT\n')
+        #print('idx.max=',idx.max())
+        #print('idx.min=',idx.min())
+        #print('tok_emb.weight=',self.tok_emb.weight)
+        #print('tok_emb.bias=',self.tok_emb.bias)
 
-        x_test=torch.zeros_like(idx)
-        te_test=self.tok_emb(x_test)
+        #x_test=torch.zeros_like(idx)
+        #te_test=self.tok_emb(x_test)
         #print('te_test:',te_test)
 
+        #print('idx.shape:',idx.shape)
+        #print('self.tok_emb.weight.shape:',self.tok_emb.weight.shape)
         token_embeddings = self.tok_emb(idx) # each index maps to a (learnable) vector
-        print('token_emb=',token_embeddings)
+        #print('token_emb=',token_embeddings)
 
         if embeddings is not None: # prepend explicit embeddings
             token_embeddings = torch.cat((embeddings, token_embeddings), dim=1)
@@ -304,8 +311,18 @@ class CodeGPT(nn.Module):
         t = token_embeddings.shape[1]
         assert t <= self.block_size, "Cannot forward, model block size is exhausted."
         position_embeddings = self.pos_emb[:, :t, :] # each position maps to a (learnable) vector
-        print('pos_emb=',position_embeddings)
-        x = self.drop(token_embeddings + position_embeddings)
+        #print('pos_emb=',position_embeddings)
+
+        if self.n_codebook_levels is not None:
+            zlevel_one_hot=zlevel_one_hot.view(1,1,-1)
+            zlevel_enc = zlevel_one_hot.expand(idx.shape[0],idx.shape[1],-1)
+            #print('zlevel_enc.shape:',zlevel_enc.shape)
+            zlevel_embeddings = self.level_emb(zlevel_one_hot)
+            #print('zlevel_embeddings.shape:',zlevel_embeddings.shape)
+            x = self.drop(token_embeddings + position_embeddings + zlevel_embeddings)
+        else:
+            x = self.drop(token_embeddings + position_embeddings)
+
 
         if self.cross_attention:
             context_token_embeddings = self.context_tok_emb(context) # each index maps to a (learnable) vector

@@ -71,6 +71,20 @@ def get_parser(**parser_kwargs):
         help="train",
     )
     parser.add_argument(
+        "--batch_frequency",
+        type=int,
+        default=750,
+        nargs="?",
+        help="how often to log within an epoch",
+    )
+    parser.add_argument(
+        "--log_every_n_epochs",
+        type=int,
+        default=1,
+        nargs="?",
+        help="avoids logging at beginning of every epoch",
+    )
+    parser.add_argument(
         "--no-test",
         type=str2bool,
         const=True,
@@ -216,7 +230,7 @@ class SetupCallback(Callback):
 
 
 class ImageLogger(Callback):
-    def __init__(self, batch_frequency, max_images, clamp=True, increase_log_steps=True):
+    def __init__(self, batch_frequency, max_images, clamp=True, increase_log_steps=True, log_every_n_epochs=1):
         super().__init__()
         self.batch_freq = batch_frequency
         self.max_images = max_images
@@ -228,6 +242,7 @@ class ImageLogger(Callback):
         if not increase_log_steps:
             self.log_steps = [self.batch_freq]
         self.clamp = clamp
+        self.log_every_n_epochs=log_every_n_epochs
 
     @rank_zero_only
     def _wandb(self, pl_module, images, batch_idx, split):
@@ -273,7 +288,8 @@ class ImageLogger(Callback):
         if (self.check_frequency(batch_idx) and  # batch_idx % self.batch_freq == 0
                 hasattr(pl_module, "log_images") and
                 callable(pl_module.log_images) and
-                self.max_images > 0):
+                self.max_images > 0 and
+                pl_module.current_epoch % self.log_every_n_epochs == 0):
             logger = type(pl_module.logger)
 
             is_train = pl_module.training
@@ -503,9 +519,10 @@ if __name__ == "__main__":
             "image_logger": {
                 "target": "main.ImageLogger",
                 "params": {
-                    "batch_frequency": 750,
+                    "batch_frequency": opt.batch_frequency,
                     "max_images": 4,
-                    "clamp": True
+                    "clamp": True,
+                    "log_every_n_epochs": opt.log_every_n_epochs
                 }
             },
             "learning_rate_logger": {
