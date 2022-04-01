@@ -14,14 +14,14 @@ model:
         cross_attention: False
         in_channels: 4
         vocab_size: 0    #Is overwritten for RVQTransformer
-        block_size: 512
+        block_size: 128
         n_layer: 16
         n_head: 16
         n_embd: 1024
     first_stage_config:
       target: taming.models.vqgan.ResidualVQModel
       params:
-        ckpt_path: "/export/scratch/fmayer/taming-logs/logs/2022-02-22T15-54-55_resvqgan_4x1024/checkpoints/last.ckpt"
+        ckpt_path: "/export/home/fmayer/taming-transformers/logs/2022-03-30T21-02-57_resvq_4layers_eq_8x8_debug/checkpoints/last.ckpt"
         n_embed: 666
         level_sizes:
         - 1.0
@@ -53,6 +53,7 @@ model:
           - 2
           - 2
           - 2
+          - 2
           - 4
           num_res_blocks: 2
           attn_resolutions: []
@@ -69,8 +70,8 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 1
-    num_workers: 4
+    batch_size: 16
+    num_workers: 16
     train:
       target: taming.data.lsun.LSUNChurchesTrain
       params:

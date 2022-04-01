@@ -396,6 +396,7 @@ class RVQTransformer (Net2NetTransformer):
                  z_codebook_level=0,
                  cond_on_prev_level=False,
                  joint_training=False,
+                 end_to_end_sampling=False,
                  ):
 
         #Adjust vocab size of transformer to that of the chosen codebook level
@@ -407,6 +408,7 @@ class RVQTransformer (Net2NetTransformer):
 
         self.cond_on_prev_level = cond_on_prev_level
         self.joint_training = joint_training
+        self.end_to_end_sampling = end_to_end_sampling
         self.z_codebook_level = z_codebook_level
         self.c_codebook_level = z_codebook_level-1 if z_codebook_level>0 else None
 
@@ -458,27 +460,24 @@ class RVQTransformer (Net2NetTransformer):
         x = self.first_stage_model.decode(quant_z)
         return x
 
-    def cond_and_pred_to_img(self, quant_c, pred_indices, target_shape_bchw):
-        #cond_indices = self.permuter(cond_indices, reverse=True)
+    def quant_c_and_ind_to_next_cblvl(self, quant_c, pred_indices, target_shape_bchw):
         pred_indices = self.permuter(pred_indices, reverse=True)
         bhwc = (target_shape_bchw[0],target_shape_bchw[2],target_shape_bchw[3],target_shape_bchw[1])
 
-        #quant_c = self.first_stage_model.quantizers[self.c_codebook_level].get_codebook_entry(
-        #    cond_indices.reshape(-1), shape=bhwc)
         quant_pred = self.first_stage_model.quantizers[self.z_codebook_level].get_codebook_entry(
                 pred_indices.reshape(-1), shape=bhwc)
-        #print('quant_c mean, std:',(quant_c.mean(),quant_c.std()))
-        #print('quant_pred mean, std:',(quant_pred.mean(),quant_pred.std()))
-        #quant_sum = torch.stack([quant_c,quant_pred],dim=0).sum(dim=0)
         quant_c = einops.rearrange(quant_c,'b (h w) c -> b c h w', h=bhwc[1], w=bhwc[2])
-        #print('quant_c.shape:',quant_c.shape)
-        #print('quant_pred.shape:',quant_pred.shape)
         if self.be_unconditional:
             quant_sum = quant_pred
         else:
             quant_sum = quant_c + quant_pred
-        x = self.first_stage_model.decode(quant_sum)
-        return x
+
+        return quant_sum
+
+    def cond_and_pred_to_img(self, quant_c, pred_indices, target_shape_bchw):
+        quant_sum = self.quant_c_and_ind_to_next_cblvl(quant_c, pred_indices, target_shape_bchw)
+        img = self.first_stage_model.decode(quant_sum)
+        return img
 
     def get_zlevel_one_hot(self,device):
         z_level_tensor=torch.ones((1),dtype=torch.long,device=device)*self.z_codebook_level
@@ -722,7 +721,7 @@ class RVQTransformer (Net2NetTransformer):
 
 
     @torch.no_grad()
-    def log_images_one_lvl(self, batch, temperature=None, top_k=None, callback=None, lr_interface=False):
+    def log_images_one_lvl(self, batch, return_quantized_sample=False, temperature=None, top_k=None, callback=None, lr_interface=False):
 
         #print('=====log_images called=====')
         log = dict()
@@ -781,7 +780,7 @@ class RVQTransformer (Net2NetTransformer):
                                        sample=True,
                                        top_k=top_k if top_k is not None else min(100,self.transformer.config.vocab_size),
                                        callback=callback if callback is not None else lambda k: None)
-            x_sample_nopix = self.decode_to_img(index_sample, z_bchw)
+            #x_sample_nopix = self.decode_to_img(index_sample, z_bchw)
 
             #print('===================Before cond_and_pred_to_img')
             #print('quant_c.shape:',quant_c.shape)
@@ -798,27 +797,27 @@ class RVQTransformer (Net2NetTransformer):
         z_start_indices = z_indices[:, :0]
 
         if not self.cond_on_prev_level and not self.joint_training:
-            index_sample = self.sample(z_start_indices, c_indices,
+            index_sample_det = self.sample(z_start_indices, c_indices,
                                        steps=z_indices.shape[1],
                                        sample=False,
                                        callback=callback if callback is not None else lambda k: None)
-            x_sample_det = self.decode_to_img(index_sample, z_bchw)
+            x_sample_det = self.decode_to_img(index_sample_det, z_bchw)
 
-        else:
-            z_start_quants=quant_z[:, :0, :]
-            index_sample = self.sample_codegpt(z_start_quants, quant_c,
-                                       steps=z_indices.shape[1],
-                                       sample=False,
-                                       callback=callback if callback is not None else lambda k: None)
+        #else:
+            #z_start_quants=quant_z[:, :0, :]
+            #index_sample_det = self.sample_codegpt(z_start_quants, quant_c,
+            #                           steps=z_indices.shape[1],
+            #                           sample=False,
+            #                           callback=callback if callback is not None else lambda k: None)
 
 
             if self.be_unconditional:
                 dummy_c = self.sos_token*torch.ones(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
                 x_sample_nopix_sum = self.cond_and_pred_to_img(dummy_c, index_sample, z_bchw)
-                #x_sample_det = self.cond_and_pred_to_img(dummy_c, index_sample, z_bchw)
+                #x_sample_det = self.cond_and_pred_to_img(dummy_c, index_sample_det, z_bchw)
             else:
                 x_sample_nopix_sum = self.cond_and_pred_to_img(quant_c, index_sample, z_bchw)
-                #x_sample_det = self.cond_and_pred_to_img(quant_c, index_sample, z_bchw)
+                #x_sample_det = self.cond_and_pred_to_img(quant_c, index_sample_det, z_bchw)
 
         # reconstruction
         #x_rec = self.decode_to_img(z_indices, z_bchw)
@@ -873,7 +872,11 @@ class RVQTransformer (Net2NetTransformer):
             log["samples_det"] = x_sample_det
             log["samples_half"] = x_sample
 
-        return log
+        if return_quantized_sample:
+            quant_sample = self.quant_c_and_ind_to_next_cblvl(quant_c, index_sample, z_bchw)
+            return log, quant_sample
+        else:
+            return log
 
 
     @torch.no_grad()
@@ -895,10 +898,16 @@ class RVQTransformer (Net2NetTransformer):
             self.use_sos_cond = True
             self.cond_on_prev_level=False
 
-            #print('==========Not logging level 0')
+            print('==========Logging level 0')
             #print('tok_emb.weight: ',self.transformer.tok_emb.weight)
-            logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
-            #logs = {}
+
+            if not self.end_to_end_sampling:
+                logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
+
+            else:
+                #Lvl0 is identical for end-to-end sampling
+                logs, quant_sample = self.log_images_one_lvl(batch, return_quantized_sample=True, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
+                print('quant_sample.shape:',quant_sample.shape)
 
             self.be_unconditional = False
             self.use_sos_cond = False
@@ -910,7 +919,26 @@ class RVQTransformer (Net2NetTransformer):
                 self.z_codebook_level = z_lvl
                 self.c_codebook_level = z_lvl-1
 
+                #Always sample from ground truth to next level
                 new_logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
+
+                #Optionally from last level sample to next level
+                if self.end_to_end_sampling:
+                    z_start_quants = quant_sample[:, :0, :]
+                    #Sample new residual indices, using last quantized sample as conditioning
+
+                    #TODO: Solve RuntimeError: mat1 dim 1 must match mat2 dim 0
+                    #wrong shapes of quant_sample probably
+                    new_sample_ind = self.sample_codegpt(z_start_quants, c=quant_sample,
+                                               steps=quant_sample.shape[1],
+                                               sample=True)
+
+                    #Add up predictions and last level quants to new quantized sample
+                    quant_sample = self.quant_c_and_ind_to_next_cblvl(quant_sample, new_sample_ind, target_shape_bchw=z_bchw)
+                    x_sample_end2end = self.first_stage_model.decode(quant_sample)
+
+                    new_logs['sample_end2end_lvl{}'.format(self.z_codebook_level)]=x_sample_end2end
+
 
                 logs = {**logs, **new_logs}
 

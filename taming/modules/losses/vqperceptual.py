@@ -257,8 +257,7 @@ class ResidualVQLPIPSWithDiscriminator(nn.Module):
                 d_weight = self.calculate_adaptive_weight(nll_loss, g_loss, last_layer=last_layer)
             except RuntimeError as e:
                 if self.training:
-                    print(e)
-                    raise RuntimeError
+                    raise e
                 else:
                     d_weight = torch.tensor(0.0)
 

@@ -6,6 +6,7 @@ model:
     unconditional: False
     cond_on_prev_level: True
     joint_training: True
+    end_to_end_sampling: True
     sos_token: -1
     transformer_config:
       target: taming.modules.transformer.mingpt.CodeGPT
