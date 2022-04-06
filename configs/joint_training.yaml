@@ -21,7 +21,7 @@ model:
     first_stage_config:
       target: taming.models.vqgan.ResidualVQModel
       params:
-        ckpt_path: "/export/scratch/fmayer/taming-logs/logs/2022-02-22T15-54-55_resvqgan_4x1024/checkpoints/last.ckpt"
+        ckpt_path: "/export/scratch/fmayer/taming-logs/lsun_churches_resvqs_older_runs/2022-02-22T15-54-55_resvqgan_4x1024/checkpoints/last.ckpt"
         n_embed: 666
         level_sizes:
         - 1.0

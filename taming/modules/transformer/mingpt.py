@@ -319,7 +319,10 @@ class CodeGPT(nn.Module):
             zlevel_enc = zlevel_one_hot.expand(idx.shape[0],idx.shape[1],-1)
             #print('zlevel_enc.shape:',zlevel_enc.shape)
             zlevel_embeddings = self.level_emb(zlevel_one_hot)
+            zlevel_embeddings = zlevel_embeddings.expand(idx.shape[0],1,-1)
             #print('zlevel_embeddings.shape:',zlevel_embeddings.shape)
+            #print('token_embeddings.shape:',token_embeddings.shape)
+            x = self.drop(torch.cat((zlevel_embeddings,token_embeddings),dim=1))
             x = self.drop(token_embeddings + position_embeddings + zlevel_embeddings)
         else:
             x = self.drop(token_embeddings + position_embeddings)

@@ -432,7 +432,7 @@ class RVQTransformer (Net2NetTransformer):
             self.sos_cond_stage = CodeGPT_SOSProvider(self.sos_token)
         self.use_sos_cond = False
 
-        print('self.device=',self.device)
+        #print('self.device=',self.device)
         #self.transformer_config.params.device=self.device
 
     def get_down_factor(self):
@@ -773,6 +773,8 @@ class RVQTransformer (Net2NetTransformer):
             x_sample_nopix = self.decode_to_img(index_sample, z_bchw)
 
         else:
+            #print('===========normal sampling==========\n')
+            #print('quant_c.shape:',quant_c.shape)
             z_start_quants=quant_z[:, :0, :]
             index_sample = self.sample_codegpt(z_start_quants, quant_c,
                                        steps=quant_z.shape[1],
@@ -873,7 +875,10 @@ class RVQTransformer (Net2NetTransformer):
             log["samples_half"] = x_sample
 
         if return_quantized_sample:
+            print('returning quantized sample\n')
+            print('quant_c.shape:',quant_c.shape)
             quant_sample = self.quant_c_and_ind_to_next_cblvl(quant_c, index_sample, z_bchw)
+            print('quant_sample.shape:',quant_sample.shape)
             return log, quant_sample
         else:
             return log
@@ -907,6 +912,7 @@ class RVQTransformer (Net2NetTransformer):
             else:
                 #Lvl0 is identical for end-to-end sampling
                 logs, quant_sample = self.log_images_one_lvl(batch, return_quantized_sample=True, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
+                logs['sample_end2end_lvl0'] = logs['samples_nopix_lvl0']
                 print('quant_sample.shape:',quant_sample.shape)
 
             self.be_unconditional = False
@@ -924,11 +930,13 @@ class RVQTransformer (Net2NetTransformer):
 
                 #Optionally from last level sample to next level
                 if self.end_to_end_sampling:
+                    z_bchw = quant_sample.shape
+                    quant_sample = einops.rearrange(quant_sample,'b c h w -> b (h w) c')
                     z_start_quants = quant_sample[:, :0, :]
                     #Sample new residual indices, using last quantized sample as conditioning
 
-                    #TODO: Solve RuntimeError: mat1 dim 1 must match mat2 dim 0
-                    #wrong shapes of quant_sample probably
+                    #print('===========end2end sampling==========\n')
+                    #print('quant_sample.shape:',quant_sample.shape)
                     new_sample_ind = self.sample_codegpt(z_start_quants, c=quant_sample,
                                                steps=quant_sample.shape[1],
                                                sample=True)
