@@ -625,6 +625,7 @@ class RVQTransformer (Net2NetTransformer):
         #print('c_quant.shape:',c_quant.shape)
         #print('z_quant.shape:',z_quant.shape)
 
+        #TODO: Adapt joint training for unequal level sizes
         if self.joint_training:
             zlevel_encoding=self.get_zlevel_one_hot(x.device)
             #zlevel_encoding=zlevel_encoding.expand(x.shape[0],x.shape[1],-1)
@@ -634,6 +635,7 @@ class RVQTransformer (Net2NetTransformer):
         if not self.transformer.cross_attention:
             if self.cond_on_prev_level:
                 cz_quants = torch.cat((c_quant, z_quant), dim=1)
+            #TODO: Adjust unconditional case to work with CodeGPT instead of GPT as well!
             else:
                 #print('a_indices.shape: ',a_indices.shape)
                 #print('c_indices.shape: ',c_indices.shape)
@@ -875,10 +877,10 @@ class RVQTransformer (Net2NetTransformer):
             log["samples_half"] = x_sample
 
         if return_quantized_sample:
-            print('returning quantized sample\n')
-            print('quant_c.shape:',quant_c.shape)
+            #print('returning quantized sample\n')
+            #print('quant_c.shape:',quant_c.shape)
             quant_sample = self.quant_c_and_ind_to_next_cblvl(quant_c, index_sample, z_bchw)
-            print('quant_sample.shape:',quant_sample.shape)
+            #print('quant_sample.shape:',quant_sample.shape)
             return log, quant_sample
         else:
             return log

@@ -323,7 +323,8 @@ class CodeGPT(nn.Module):
             #print('zlevel_embeddings.shape:',zlevel_embeddings.shape)
             #print('token_embeddings.shape:',token_embeddings.shape)
             x = self.drop(torch.cat((zlevel_embeddings,token_embeddings),dim=1))
-            x = self.drop(token_embeddings + position_embeddings + zlevel_embeddings)
+            #print('==============x.shape:',x.shape)
+            #x = self.drop(token_embeddings + position_embeddings + zlevel_embeddings)
         else:
             x = self.drop(token_embeddings + position_embeddings)
 
@@ -350,6 +351,9 @@ class CodeGPT(nn.Module):
 
         # if we are given some desired targets also calculate the loss
         loss = None
+        if self.n_codebook_levels is not None:
+            #cut off logit corresponding to level embedding token
+            logits = logits[:,1:,:]
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
 
