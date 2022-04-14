@@ -322,15 +322,19 @@ class CodeGPT(nn.Module):
             zlevel_embeddings = zlevel_embeddings.expand(idx.shape[0],1,-1)
             #print('zlevel_embeddings.shape:',zlevel_embeddings.shape)
             #print('token_embeddings.shape:',token_embeddings.shape)
-            x = self.drop(torch.cat((zlevel_embeddings,token_embeddings),dim=1))
-            #print('==============x.shape:',x.shape)
-            #x = self.drop(token_embeddings + position_embeddings + zlevel_embeddings)
+
+            prepend_lvl_emb=False
+            #Either prepend level embeddings or add them
+            if prepend_lvl_emb:
+                x = self.drop(torch.cat((zlevel_embeddings,token_embeddings),dim=1))
+            else:
+                x = self.drop(token_embeddings + position_embeddings + zlevel_embeddings)
         else:
             x = self.drop(token_embeddings + position_embeddings)
 
 
         if self.cross_attention:
-            context_token_embeddings = self.context_tok_emb(context) # each index maps to a (learnable) vector
+            context_token_embeddings = self.context_tok_emb(context).to(x.device) 
             t_c = context_token_embeddings.shape[1]
             assert t_c <= self.block_size, "Cannot forward, model block size is exhausted."
             context_position_embeddings = self.context_pos_emb[:, :t_c, :] # each position maps to a (learnable) vector
@@ -352,8 +356,9 @@ class CodeGPT(nn.Module):
         # if we are given some desired targets also calculate the loss
         loss = None
         if self.n_codebook_levels is not None:
-            #cut off logit corresponding to level embedding token
-            logits = logits[:,1:,:]
+            if prepend_lvl_emb:
+                #cut off logit corresponding to level embedding token
+                logits = logits[:,1:,:]
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
 

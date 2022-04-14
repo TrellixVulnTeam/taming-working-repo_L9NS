@@ -604,8 +604,8 @@ class RVQTransformer (Net2NetTransformer):
             self.cond_stage_model = model
 
             
+    # one step to produce the logits
     def forward(self, x, c):
-        # one step to produce the logits
         #print('forward, x.shape:',x.shape)
         #print('forward, c.shape:',c.shape)
         z_quant, z_indices, _ = self.encode_to_z(x)
@@ -723,16 +723,18 @@ class RVQTransformer (Net2NetTransformer):
 
 
     @torch.no_grad()
-    def log_images_one_lvl(self, batch, return_quantized_sample=False, temperature=None, top_k=None, callback=None, lr_interface=False):
+    def log_images_one_lvl(self, batch, return_quantized_sample=False, temperature=None, top_k=None, callback=None, lr_interface=False, **kwargs):
 
         #print('=====log_images called=====')
         log = dict()
 
-        N = 4
+        N = kwargs['N'] if 'N' in kwargs.keys() else 4
+
         if lr_interface:
             x, c = self.get_xc(batch, N, diffuse=False, upsample_factor=8)
         else:
             x, c = self.get_xc(batch, N)
+
         x = x.to(device=self.device)
         c = c.to(device=self.device)
 
@@ -887,13 +889,13 @@ class RVQTransformer (Net2NetTransformer):
 
 
     @torch.no_grad()
-    def log_images(self, batch, temperature=None, top_k=None, callback=None, lr_interface=False, **kwargs):
+    def log_images(self, batch, temperature=None, top_k=None, callback=None, lr_interface=False, log_ground_truth_upsampling=True, **kwargs):
         print('==========Starting Image Logging=========')
         #print('head.weight(decoder):',self.transformer.head.weight)
         #print('tok_emb.weight: ',self.transformer.tok_emb.weight)
 
         if not self.joint_training:
-            logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
+            logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface, **kwargs)
 
             return logs
 
@@ -903,23 +905,23 @@ class RVQTransformer (Net2NetTransformer):
             self.c_codebook_level = None
             self.be_unconditional = True
             self.use_sos_cond = True
-            self.cond_on_prev_level=False
+            #self.cond_on_prev_level=False
 
             print('==========Logging level 0')
             #print('tok_emb.weight: ',self.transformer.tok_emb.weight)
 
             if not self.end_to_end_sampling:
-                logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
+                logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface,**kwargs)
 
             else:
-                #Lvl0 is identical for end-to-end sampling
-                logs, quant_sample = self.log_images_one_lvl(batch, return_quantized_sample=True, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
+                #Lvl0 is identical for normal sampling and end-to-end sampling
+                logs, quant_sample = self.log_images_one_lvl(batch, return_quantized_sample=True, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface,**kwargs)
                 logs['sample_end2end_lvl0'] = logs['samples_nopix_lvl0']
                 print('quant_sample.shape:',quant_sample.shape)
 
             self.be_unconditional = False
             self.use_sos_cond = False
-            self.cond_on_prev_level=True
+            #self.cond_on_prev_level=True
 
             for z_lvl in range(1,self.first_stage_model.n_levels):
                 print('==========loop, z_lvl=', z_lvl)
@@ -927,10 +929,13 @@ class RVQTransformer (Net2NetTransformer):
                 self.z_codebook_level = z_lvl
                 self.c_codebook_level = z_lvl-1
 
-                #Always sample from ground truth to next level
-                new_logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface)
+                #Sample residuals to get from ground truth lvl n to lvl n+1
+                if log_ground_truth_upsampling:
+                    new_logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface,**kwargs)
+                else:
+                    new_logs={}
 
-                #Optionally from last level sample to next level
+                #Sample residuals to get from sampled lvl n to lvl n+1
                 if self.end_to_end_sampling:
                     z_bchw = quant_sample.shape
                     quant_sample = einops.rearrange(quant_sample,'b c h w -> b (h w) c')
