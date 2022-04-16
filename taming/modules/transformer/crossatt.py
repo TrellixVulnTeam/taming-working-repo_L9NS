@@ -143,20 +143,21 @@ class CrossAttTransformerBlock(nn.Module):
             dropout=config.ff_pdrop
         else:
             dropout=config.embd_pdrop
-        self.ff = FeedForward(config.n_embd, dropout=dropout)
+
+        self.ff1 = FeedForward(config.n_embd, dropout=dropout)
+        self.ff2 = FeedForward(config.n_embd, dropout=dropout)
 
         self.attn2 = CrossAttention(config)
         self.norm1 = nn.LayerNorm(config.n_embd)
         self.norm2 = nn.LayerNorm(config.n_embd)
         self.norm3 = nn.LayerNorm(config.n_embd)
+        self.norm4 = nn.LayerNorm(config.n_embd)
 
 
     def forward(self, x_and_context):
-        #print('============================forward2===============================')
         (x, context) = x_and_context
         x = self.attn1(self.norm1(x)) + x
-        #TODO: Add FF layer here (as in Perceiver architecture)
-        x = self.attn2(self.norm2(x), context=context) + x
-        x = self.ff(self.norm3(x)) + x
-        #return x
+        x = self.ff1(self.norm2(x)) + x
+        x = self.attn2(self.norm3(x), context=context) + x
+        x = self.ff2(self.norm4(x)) + x
         return (x, context)

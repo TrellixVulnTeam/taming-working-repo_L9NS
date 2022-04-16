@@ -482,6 +482,7 @@ class ResidualVQModel(VQModel):
     """
     # TODO: add EMA update to Quantizer
     def __init__(self, *args, **kwargs):
+        print(kwargs)
         n_levels = kwargs.pop("n_levels", 1)
         const_embed = kwargs.pop("constant_n_embed", 0)
         if const_embed > 0:
@@ -504,15 +505,27 @@ class ResidualVQModel(VQModel):
         use_ema = kwargs.pop("use_ema", False)      # TODO: implement
         ckpt_path = kwargs.pop("ckpt_path", None)
         ignore_keys = kwargs.pop("ignore_keys", [])
+        self.shared_weights = kwargs.pop("shared_weights",False)
+
+
         super().__init__(*args, **kwargs)
         self.n_levels = n_levels
         self.register_buffer("layer_weights", torch.tensor(layer_weights))
         print(f"{self.__class__.__name__} weighs layer-losses as {self.layer_weights}")
         del self.quantize
-        self.quantizers = nn.ModuleList(
-            [VectorQuantizer(n_embeds[n], self.embed_dim, beta=0.25) for n in range(n_levels)]
-            # TODO: use correct beta (beta: coefficient of commitment cost used in loss term)
-        )
+
+        if self.shared_weights:
+            #shared weights require equal level sizes
+            assert len(set(n_embeds)) == 1
+            shared_quantizer = VectorQuantizer(n_embeds[0], self.embed_dim, beta=0.25)
+            self.quantizers = nn.ModuleList(
+            [shared_quantizer for n in range(n_levels)])
+        else:
+
+            self.quantizers = nn.ModuleList(
+                [VectorQuantizer(n_embeds[n], self.embed_dim, beta=0.25) for n in range(n_levels)]
+            )
+
         self.use_ema = use_ema   #EMA: Exponential Moving Averages, alternative codebook learning rule
         self.level_sizes = level_sizes
         self.downsample = Resize(mode=resample_mode)

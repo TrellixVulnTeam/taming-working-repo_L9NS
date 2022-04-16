@@ -353,6 +353,10 @@ class CodeGPT(nn.Module):
         #print('Before self.head(x): x=',x)
         logits = self.head(x)
 
+        #if self.cross_attention:
+            #cut off logit corresponding to sos token
+        #    logits = logits[:,1:,:]
+
         # if we are given some desired targets also calculate the loss
         loss = None
         if self.n_codebook_levels is not None:

@@ -1,6 +1,7 @@
 import os, math
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 import pytorch_lightning as pl
 import einops
 
@@ -428,9 +429,12 @@ class RVQTransformer (Net2NetTransformer):
                  sos_token,
                  unconditional)
 
+        self.sos_token=sos_token
         if self.joint_training:
             self.sos_cond_stage = CodeGPT_SOSProvider(self.sos_token)
         self.use_sos_cond = False
+
+        self.sos_emb = nn.Linear(transformer_config.params.in_channels,transformer_config.params.in_channels)
 
         #print('self.device=',self.device)
         #self.transformer_config.params.device=self.device
@@ -483,22 +487,14 @@ class RVQTransformer (Net2NetTransformer):
         z_level_tensor=torch.ones((1),dtype=torch.long,device=device)*self.z_codebook_level
         return torch.nn.functional.one_hot(z_level_tensor, num_classes=self.first_stage_config.params.n_levels).float()
 
-    def append_level_encoding(self, x):
-        level_encoding=self.get_zlevel_one_hot(quant_z.device)
-        print(level_encoding)
-        level_encoding=level_encoding.expand(x.shape[0],x.shape[1],-1)
-        print(level_encoding.shape)
-        quant_z = torch.cat((quant_z,level_encoding), dim=2)
-        print(quant_z.shape)
-
 
     @torch.no_grad()
     def encode_to_z(self, x, codebook_level=None):
+        #print('------------------------encode_to_z called-------------------------------')
+        #print('x.shape:',x.shape)
         if codebook_level is None:
             codebook_level=self.z_codebook_level
 
-        #print('------------------------encode_to_z called-------------------------------')
-        #print('x.shape:',x.shape)
         #print(self.z_codebook_level)
         #print(self.first_stage_model.quantizers[self.z_codebook_level])
         pre_quant = self.first_stage_model.encode_to_prequant(x)
@@ -522,6 +518,12 @@ class RVQTransformer (Net2NetTransformer):
         #print('encode_to_z done')
         bchw = quant_z.shape
         quant_z = einops.rearrange(quant_z, 'b c h w -> b (h w) c')
+
+        if self.transformer.cross_attention:
+            sos_quant = torch.ones((quant_z.shape[0],1,quant_z.shape[2]),dtype=quant_z.dtype, device=quant_z.device) * self.sos_token
+            sos_embedding = self.sos_emb(sos_quant)
+            quant_z = torch.cat((sos_embedding,quant_z),dim=1)
+            
         return quant_z, indices, bchw
 
     @torch.no_grad()
@@ -670,7 +672,8 @@ class RVQTransformer (Net2NetTransformer):
 
         else:
             if self.cond_on_prev_level: 
-                target = z_indices[:,:-1]
+                #target = z_indices[:,:-1]
+                target = z_indices[:,1:]
                 #print('====Before forward')
                 #print('z_quant.shape: ',z_quant.shape)
                 #print('c_quant.shape: ',c_quant.shape)
@@ -679,6 +682,9 @@ class RVQTransformer (Net2NetTransformer):
             else:
                 target = z_indices
                 logits, _ = self.transformer(z_indices[:, :-1], context = a_indices,zlevel_one_hot=zlevel_encoding)
+
+            # cut off output corresponding to sos token
+            logits = logits[:, 1:]
 
 
         return logits, target
@@ -779,13 +785,19 @@ class RVQTransformer (Net2NetTransformer):
         else:
             #print('===========normal sampling==========\n')
             #print('quant_c.shape:',quant_c.shape)
-            z_start_quants=quant_z[:, :0, :]
+            if self.transformer.cross_attention:
+                z_start_quants=quant_z[:, [0], :]
+            else:
+                z_start_quants=quant_z[:, :0, :]
+
+            #print('z_start_quants.shape:',z_start_quants.shape)
             index_sample = self.sample_codegpt(z_start_quants, quant_c,
                                        steps=quant_z.shape[1],
                                        temperature=temperature if temperature is not None else 1.0,
                                        sample=True,
                                        top_k=top_k if top_k is not None else min(100,self.transformer.config.vocab_size),
                                        callback=callback if callback is not None else lambda k: None)
+
             #x_sample_nopix = self.decode_to_img(index_sample, z_bchw)
 
             #print('===================Before cond_and_pred_to_img')
@@ -917,7 +929,7 @@ class RVQTransformer (Net2NetTransformer):
                 #Lvl0 is identical for normal sampling and end-to-end sampling
                 logs, quant_sample = self.log_images_one_lvl(batch, return_quantized_sample=True, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface,**kwargs)
                 logs['sample_end2end_lvl0'] = logs['samples_nopix_lvl0']
-                print('quant_sample.shape:',quant_sample.shape)
+                #print('quant_sample.shape:',quant_sample.shape)
 
             self.be_unconditional = False
             self.use_sos_cond = False
@@ -963,10 +975,7 @@ class RVQTransformer (Net2NetTransformer):
     def sample_codegpt(self, x, c, steps, temperature=1.0, sample=False, top_k=None,
                callback=lambda k: None):
 
-        if self.transformer.cross_attention:
-            sos = torch.ones((x.shape[0],1,x.shape[2]),dtype=x.dtype, device=x.device) * self.sos_token
-            x = torch.cat((sos,x),dim=1)
-        else:
+        if not self.transformer.cross_attention:
             #print('sample_codegpt========================================')
             #print('x.shape:',x.shape)
             #print('c.shape:',c.shape)
@@ -1029,9 +1038,9 @@ class RVQTransformer (Net2NetTransformer):
             x = torch.cat((x, ix_quant), dim=1)
         if self.transformer.cross_attention:
             # cut off sos token
-            x = x[:,1:,:]
+            x_indices = x_indices[:, 1:]
         else:
             # cut off conditioning
-            x = x[:, c.shape[1]:,:]
+            x_indices = x_indices[:, c.shape[1]:]
         #print('return x_indices, shape:',x_indices.shape)
         return x_indices
