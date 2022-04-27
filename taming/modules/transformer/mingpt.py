@@ -143,7 +143,7 @@ class GPT(nn.Module):
                            n_unmasked=n_unmasked, linear_self_attention=linear_self_attention)
         # input embedding stem
         self.tok_emb = nn.Embedding(config.vocab_size, config.n_embd)
-        self.pos_emb = nn.Parameter(torch.zeros(1, config.block_size, config.n_embd))
+        self.pos_emb = nn.Parameter(torch.rand(1, config.block_size, config.n_embd))
         self.drop = nn.Dropout(config.embd_pdrop)
         # transformer
         self.blocks = nn.Sequential(*[Block(config) for _ in range(config.n_layer)])
@@ -249,16 +249,16 @@ class CodeGPT(nn.Module):
 
         # input embedding stem
         self.tok_emb = nn.Linear(in_channels, config.n_embd)
-        self.pos_emb = nn.Parameter(torch.zeros(1, config.block_size, config.n_embd))
+        self.pos_emb = nn.Parameter(torch.rand(1, config.block_size, config.n_embd))
         if n_codebook_levels is not None:
-            self.level_emb = nn.Linear(n_codebook_levels, config.n_embd)
+            self.level_emb = nn.Parameter(torch.rand(1, n_codebook_levels, config.n_embd))
         self.drop = nn.Dropout(config.embd_pdrop)
         if self.cross_attention:
             self.context_tok_emb = nn.Linear(in_channels, config.n_embd)
-            self.context_pos_emb = nn.Parameter(torch.zeros(1, config.block_size, config.n_embd))
+            self.context_pos_emb = nn.Parameter(torch.rand(1, config.block_size, config.n_embd))
             self.context_drop = nn.Dropout(config.embd_pdrop)
             if n_codebook_levels is not None:
-                self.context_level_emb = nn.Linear(n_codebook_levels, config.n_embd)
+                self.context_level_emb = nn.Parameter(torch.rand(1, n_codebook_levels, config.n_embd))
 
         # transformer
         if self.cross_attention:
@@ -289,7 +289,7 @@ class CodeGPT(nn.Module):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
 
-    def forward(self, idx, embeddings=None, targets=None, context=None, zlevel_one_hot=None):
+    def forward(self, idx, embeddings=None, targets=None, context=None, zlevel=None):
         # forward the CodeGPT model
         #print('==================================forward CodeGPT\n')
         #print('idx.max=',idx.max())
@@ -313,20 +313,23 @@ class CodeGPT(nn.Module):
         assert t <= self.block_size, "Cannot forward, model block size is exhausted."
         position_embeddings = self.pos_emb[:, :t, :] # each position maps to a (learnable) vector
         #print('pos_emb=',position_embeddings)
+        #print('posemb.std():', position_embeddings.std())
 
-        if self.n_codebook_levels is not None:
-            zlevel_one_hot=zlevel_one_hot.view(1,1,-1)
-            zlevel_enc = zlevel_one_hot.expand(idx.shape[0],idx.shape[1],-1)
+        if zlevel is not None:
+            #zlevel_one_hot=zlevel_one_hot.view(1,1,-1)
+            #zlevel_enc = zlevel_one_hot.expand(idx.shape[0],idx.shape[1],-1)
             #print('zlevel_enc.shape:',zlevel_enc.shape)
-            zlevel_embeddings = self.level_emb(zlevel_one_hot)
-            zlevel_embeddings = zlevel_embeddings.expand(idx.shape[0],1,-1)
+            zlevel_embeddings = self.level_emb[:,zlevel,:]
+            #print('zlevel_embeddings.std():', zlevel_embeddings.std())
+            #zlevel_embeddings = zlevel_embeddings.expand(idx.shape[0],1,-1)
             #print('zlevel_embeddings.shape:',zlevel_embeddings.shape)
             #print('token_embeddings.shape:',token_embeddings.shape)
+
 
             prepend_lvl_emb=False
             #Either prepend level embeddings or add them
             if prepend_lvl_emb:
-                x = self.drop(torch.cat((zlevel_embeddings,token_embeddings),dim=1))
+                x = self.drop(torch.cat((zlevel_embeddings,token_embeddings + position_embeddings),dim=1))
             else:
                 x = self.drop(token_embeddings + position_embeddings + zlevel_embeddings)
         else:
@@ -334,14 +337,22 @@ class CodeGPT(nn.Module):
 
 
         if self.cross_attention:
+            #print(self.context_tok_emb)
             context_token_embeddings = self.context_tok_emb(context).to(x.device) 
             t_c = context_token_embeddings.shape[1]
             assert t_c <= self.block_size, "Cannot forward, model block size is exhausted."
             context_position_embeddings = self.context_pos_emb[:, :t_c, :] # each position maps to a (learnable) vector
-            context = self.context_drop(context_token_embeddings + context_position_embeddings)
+            #print('context posemb.std():',context_position_embeddings.std())
+            if zlevel is not None:
+                context_zlevel_embeddings = self.context_level_emb[:,zlevel,:]
+                context = self.context_drop(context_token_embeddings + context_position_embeddings + context_zlevel_embeddings)
+            else:
+                context = self.context_drop(context_token_embeddings + context_position_embeddings)
 
             #print('Before forward in CrossAttBlock=======================\n')
             #print('x.shape: ',x.shape)
+            #print('x:',x)
+            #print('context:',context)
             (x, context) = self.blocks((x, context))
             #print('x.shape: ',x.shape)
         else:
@@ -359,7 +370,7 @@ class CodeGPT(nn.Module):
 
         # if we are given some desired targets also calculate the loss
         loss = None
-        if self.n_codebook_levels is not None:
+        if zlevel is not None:
             if prepend_lvl_emb:
                 #cut off logit corresponding to level embedding token
                 logits = logits[:,1:,:]

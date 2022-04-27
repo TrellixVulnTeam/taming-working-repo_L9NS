@@ -1,4 +1,6 @@
 import torch.nn as nn
+import torch
+from torch.nn import functional as F
 import einops
 from einops import rearrange
 from torch import einsum
@@ -78,7 +80,7 @@ class CrossAttention(nn.Module):
             context_dim = query_dim
 
         if hasattr(config,'causal'):
-            self.causal = causal
+            self.causal = config.causal
         else:
             self.causal = False
 
@@ -156,6 +158,8 @@ class CrossAttTransformerBlock(nn.Module):
 
     def forward(self, x_and_context):
         (x, context) = x_and_context
+        #print(x.std(),context.std())
+        #print(x[:,0,:])
         x = self.attn1(self.norm1(x)) + x
         x = self.ff1(self.norm2(x)) + x
         x = self.attn2(self.norm3(x), context=context) + x

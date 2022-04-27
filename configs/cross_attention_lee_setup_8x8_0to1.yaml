@@ -19,7 +19,7 @@ model:
     first_stage_config:
       target: taming.models.vqgan.ResidualVQModel
       params:
-        ckpt_path: "/export/home/fmayer/taming-transformers/logs/2022-04-08T16-00-26_lee_2022_setup_8x8/checkpoints/epoch=000004.ckpt"
+        ckpt_path: "/export/scratch/fmayer/taming-logs/resvq_lee_setup/2022-04-08T16-00-26_lee_2022_setup_8x8/checkpoints/epoch=000004.ckpt"
         n_embed: 666
         level_sizes:
         - 1.0
@@ -68,8 +68,8 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 48
-    num_workers: 12
+    batch_size: 1
+    num_workers: 1
     train:
       target: taming.data.lsun.LSUNChurchesTrain
       params:

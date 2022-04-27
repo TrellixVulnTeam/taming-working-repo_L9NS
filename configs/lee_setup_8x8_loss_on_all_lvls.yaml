@@ -4,10 +4,9 @@ model:
   params:
     n_embed: 666 #dummy, unused
     level_sizes: [1.0, 1.0, 1.0, 1.0]   # relative to encoder-output, e.g. for 32x32: 8x8 -> 16x16 -> 32x32 -> 32x32
-    layer_weights: [0., 0., 0., 1.]
-    n_embeds: [16384,16384,16384,16384]
+    layer_weights: [1., 1., 1., 1.]
+    n_embeds: [4096,4096,4096,4096]
     n_levels: 4
-    shared_codebook: True
     embed_dim: 1024
     monitor: "val/rec_loss"
 
@@ -28,7 +27,7 @@ model:
       params:
         quantize_scale_weights: [1., 1., 1., 1.]
         codebook_weight: 1.0
-        n_classes: [16384,16384,16384,16384]
+        n_classes: [4096, 4096, 4096, 4096]
         use_actnorm: False
         disc_start: 40001
         disc_weight: 1.0

@@ -505,7 +505,7 @@ class ResidualVQModel(VQModel):
         use_ema = kwargs.pop("use_ema", False)      # TODO: implement
         ckpt_path = kwargs.pop("ckpt_path", None)
         ignore_keys = kwargs.pop("ignore_keys", [])
-        self.shared_weights = kwargs.pop("shared_weights",False)
+        self.shared_codebook = kwargs.pop("shared_codebook",False)
 
 
         super().__init__(*args, **kwargs)
@@ -514,7 +514,7 @@ class ResidualVQModel(VQModel):
         print(f"{self.__class__.__name__} weighs layer-losses as {self.layer_weights}")
         del self.quantize
 
-        if self.shared_weights:
+        if self.shared_codebook:
             #shared weights require equal level sizes
             assert len(set(n_embeds)) == 1
             shared_quantizer = VectorQuantizer(n_embeds[0], self.embed_dim, beta=0.25)

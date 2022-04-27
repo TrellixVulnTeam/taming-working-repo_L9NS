@@ -141,8 +141,8 @@ class CodeGPT_SOSProvider(AbstractEncoder):
         #print('=========================\n')
         #print('Using CodeGPT SOSProvider')
         # get shape from data and replicate sos_token
-        c = torch.ones(*bchw)*self.sos_token
-        c = c.long().to(x.device)
+        c = torch.ones(*bchw,device=x.device)*self.sos_token
+        #c = c.long().to(x.device)
         if self.quantize_interface:
             return c, None, [None, None, c]
         return c
