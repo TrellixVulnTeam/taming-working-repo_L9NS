@@ -408,6 +408,9 @@ class RVQTransformer (Net2NetTransformer):
         self.vocab_size=first_stage_config.params.n_embeds[z_codebook_level]
         transformer_config.params.vocab_size=self.vocab_size
 
+        if joint_training:
+            transformer_config.params.n_codebook_levels = first_stage_config.params.n_levels
+
         self.first_stage_config=first_stage_config
         self.transformer_config=transformer_config
 
@@ -958,18 +961,18 @@ class RVQTransformer (Net2NetTransformer):
                     z_bchw = quant_sample.shape
                     quant_sample = einops.rearrange(quant_sample,'b c h w -> b (h w) c')
                     if self.transformer.cross_attention and not self.be_unconditional:
-                        sos_embedding = self.sos_emb.expand(quant_z.shape[0],-1,-1)
+                        sos_embedding = self.sos_emb.expand(quant_sample.shape[0],-1,-1)
                         z_start_quants = sos_embedding
                     else:
                         z_start_quants = quant_sample[:, :0, :]
 
                     #Sample new residual indices, using last quantized sample as conditioning
-                    print('===========end2end sampling==========\n')
-                    print('quant_sample.shape:',quant_sample.shape)
+                    #print('===========end2end sampling==========\n')
+                    #print('quant_sample.shape:',quant_sample.shape)
                     new_sample_ind = self.sample_codegpt(z_start_quants, c=quant_sample,
                                                steps=quant_sample.shape[1],
                                                sample=True)
-                    print('new_sample_ind.shape:',new_sample_ind.shape)
+                    #print('new_sample_ind.shape:',new_sample_ind.shape)
 
 
                     #Add up predictions and last level quants to new quantized sample
