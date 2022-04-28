@@ -4,7 +4,6 @@ model:
   params:
     z_codebook_level: 1
     unconditional: False
-    cond_on_prev_level: True
     joint_training: False
     transformer_config:
       target: taming.modules.transformer.mingpt.CodeGPT

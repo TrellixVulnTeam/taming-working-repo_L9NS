@@ -4,25 +4,26 @@ model:
   params:
     z_codebook_level: 1
     unconditional: False
-    joint_training: False
+    joint_training: True
+    end_to_end_sampling: True
+    sos_token: 0.
     transformer_config:
       target: taming.modules.transformer.mingpt.CodeGPT
       params:
-        cross_attention: True
-        in_channels: 4
+        cross_attention: False
+        in_channels: 1024
+        #n_codebook_levels: 4
         vocab_size: 0    #Is overwritten for RVQTransformer
-        block_size: 257
-        n_layer: 16
+        block_size: 128
+        n_layer: 24
         n_head: 16
-        n_embd: 1024
+        n_embd: 256
     first_stage_config:
       target: taming.models.vqgan.ResidualVQModel
       params:
-        ckpt_path: "/export/scratch/fmayer/taming-logs/lsun_churches_resvqs_newer_runs/2022-04-02T17-15-31_resvq_6x2_seqlen16x16/checkpoints/epoch=000004.ckpt"
+        ckpt_path: "/export/scratch/fmayer/taming-logs/resvq_lee_setup/2022-04-08T16-00-26_lee_2022_setup_8x8/epoch=000004.ckpt"
         n_embed: 666
         level_sizes:
-        - 1.0
-        - 1.0
         - 1.0
         - 1.0
         - 1.0
@@ -31,28 +32,25 @@ model:
         - 0.0
         - 0.0
         - 0.0
-        - 0.0
-        - 0.0
         - 1.0
         n_embeds:
-        - 2
-        - 2
-        - 2
-        - 2
-        - 2
-        - 2
-        n_levels: 6
-        embed_dim: 4
+        - 4096
+        - 4096
+        - 4096
+        - 4096
+        n_levels: 4
+        embed_dim: 1024
         monitor: val/rec_loss
         ddconfig:
           double_z: false
-          z_channels: 4
+          z_channels: 256
           resolution: 256
           in_channels: 3
           out_ch: 3
           ch: 128
           ch_mult:
           - 1
+          - 2
           - 2
           - 2
           - 2
@@ -72,8 +70,8 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 2
-    num_workers: 2
+    batch_size: 48
+    num_workers: 16
     train:
       target: taming.data.lsun.LSUNChurchesTrain
       params:

@@ -6,7 +6,7 @@ import pytorch_lightning as pl
 import einops
 
 from main import instantiate_from_config
-from taming.modules.util import SOSProvider,CodeGPT_SOSProvider
+from taming.modules.util import SOSProvider
 
 
 def disabled_train(self, mode=True):
@@ -64,7 +64,6 @@ class Net2NetTransformer(pl.LightningModule):
         self.first_stage_model = model
 
     def init_cond_stage_from_ckpt(self, config):
-        #print('init_cond_stage_from_ckpt called=============')
         if config == "__is_first_stage__":
             print("Using first stage also as cond stage.")
             self.cond_stage_model = self.first_stage_model
@@ -94,11 +93,7 @@ class Net2NetTransformer(pl.LightningModule):
         else:
             a_indices = z_indices
 
-        #print('a_indices.shape: ',a_indices.shape)
-        #print('c_indices.shape: ',c_indices.shape)
         cz_indices = torch.cat((c_indices, a_indices), dim=1)
-        #print('Forward step, cz_indices=',cz_indices)
-        #print('Max Index = ', cz_indices.max())
 
         # target includes all sequence elements (no need to handle first one
         # differently because we are conditioning)
@@ -107,8 +102,6 @@ class Net2NetTransformer(pl.LightningModule):
         logits, _ = self.transformer(cz_indices[:, :-1])
         # cut off conditioning outputs - output i corresponds to p(z_i | z_{<i}, c)
         logits = logits[:, c_indices.shape[1]-1:]
-
-        #print('logits.shape: ',logits.shape)
 
         return logits, target
 
@@ -151,14 +144,11 @@ class Net2NetTransformer(pl.LightningModule):
             # cut off conditioning
             x = ix[:, c.shape[1]-1:]
         else:
-            #print('Before loop in sample function')
-            #print('Steps= ',steps)
             for k in range(steps):
                 callback(k)
                 assert x.size(1) <= block_size # make sure model can see conditioning
                 x_cond = x if x.size(1) <= block_size else x[:, -block_size:]  # crop context if needed
                 logits, _ = self.transformer(x_cond)
-                #print('logits.shape: ', logits.shape)
                 # pluck the logits at the final step and scale by temperature
                 logits = logits[:, -1, :] / temperature
                 # optionally crop probabilities to only the top k options
@@ -180,9 +170,6 @@ class Net2NetTransformer(pl.LightningModule):
     @torch.no_grad()
     def encode_to_z(self, x):
         quant_z, _, info = self.first_stage_model.encode(x)
-        #print('-------------------------------------------------------')
-        #print('min_encoding_indices shape:',info[2].shape)
-        #print('-------------------------------------------------------')
         indices = info[2].view(quant_z.shape[0], -1) #info[2]=min_encoding_indices (indices of closest embedding in codebook)
         indices = self.permuter(indices)
         return quant_z, indices
@@ -200,9 +187,6 @@ class Net2NetTransformer(pl.LightningModule):
     def decode_to_img(self, index, zshape):
         index = self.permuter(index, reverse=True)
         bhwc = (zshape[0],zshape[2],zshape[3],zshape[1])
-        #print('Decoding Image. bhwc=',bhwc)
-        #print('index.shape ', index.shape)
-        #print('index.reshape(-1) shape ',index.reshape(-1).shape)
         quant_z = self.first_stage_model.quantize.get_codebook_entry(
             index.reshape(-1), shape=bhwc)
         x = self.first_stage_model.decode(quant_z)
@@ -210,8 +194,6 @@ class Net2NetTransformer(pl.LightningModule):
 
     @torch.no_grad()
     def log_images(self, batch, temperature=None, top_k=None, callback=None, lr_interface=False, **kwargs):
-
-        #print('=====log_images called=====')
         log = dict()
 
         N = 4
@@ -225,10 +207,8 @@ class Net2NetTransformer(pl.LightningModule):
         quant_z, z_indices = self.encode_to_z(x)
         quant_c, c_indices = self.encode_to_c(c)
 
-        #print('Creating half sample=========')
         # create a "half"" sample
         z_start_indices = z_indices[:,:z_indices.shape[1]//2]
-        #print('z_start_indices: ', z_start_indices)
 
         index_sample = self.sample(z_start_indices, c_indices,
                                    steps=z_indices.shape[1]-z_start_indices.shape[1],
@@ -237,9 +217,7 @@ class Net2NetTransformer(pl.LightningModule):
                                    top_k=top_k if top_k is not None else min(100,self.transformer.config.vocab_size),
                                    callback=callback if callback is not None else lambda k: None)
 
-        #print('index_sample: ', index_sample)
         x_sample = self.decode_to_img(index_sample, quant_z.shape)
-        #print('Half sample created==========')
 
         # sample
         z_start_indices = z_indices[:, :0]
@@ -316,7 +294,6 @@ class Net2NetTransformer(pl.LightningModule):
         return x, c
 
     def shared_step(self, batch, batch_idx):
-        #print('=====================shared_step===============')
         x, c = self.get_xc(batch)
         logits, target = self(x, c)
         loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), target.reshape(-1))
@@ -399,7 +376,6 @@ class RVQTransformer (Net2NetTransformer):
                  sos_token=0.,
                  unconditional=False,
                  z_codebook_level=0,
-                 cond_on_prev_level=False,
                  joint_training=False,
                  end_to_end_sampling=False,
                  ):
@@ -414,9 +390,12 @@ class RVQTransformer (Net2NetTransformer):
         self.first_stage_config=first_stage_config
         self.transformer_config=transformer_config
 
-        self.cond_on_prev_level = cond_on_prev_level
         self.joint_training = joint_training
         self.end_to_end_sampling = end_to_end_sampling
+
+        if joint_training:
+            #self.z_codebook_level is altered in each train loop in joint_training mode, starts with 0
+            z_codebook_level = 0
         self.z_codebook_level = z_codebook_level
         self.c_codebook_level = z_codebook_level-1 if z_codebook_level>0 else None
 
@@ -437,9 +416,6 @@ class RVQTransformer (Net2NetTransformer):
                  unconditional)
 
         self.sos_token=sos_token
-        if self.joint_training:
-            self.sos_cond_stage = CodeGPT_SOSProvider(self.sos_token)
-        self.use_sos_cond = False
 
         self.sos_emb = nn.Parameter(torch.rand(1,1,transformer_config.params.in_channels))
 
@@ -458,14 +434,8 @@ class RVQTransformer (Net2NetTransformer):
         return res//down_f
 
     def decode_to_img(self, index, zshape):
-        #print('quant_pred mean, std:',quant_pred.mean())
         index = self.permuter(index, reverse=True)
         bhwc = (zshape[0],zshape[2],zshape[3],zshape[1])
-        #print('Decoding Image. bhwc=',bhwc)
-        #print('index.shape ', index.shape)
-        #print('index.reshape(-1) shape ',index.reshape(-1).shape)
-        #print('self.first_stage_model.quantizers: ', self.first_stage_model.quantizers)
-        #print(self.first_stage_model.quantizers[self.z_codebook_level])
         quant_z = self.first_stage_model.quantizers[self.z_codebook_level].get_codebook_entry(
             index.reshape(-1), shape=bhwc)
         x = self.first_stage_model.decode(quant_z)
@@ -536,80 +506,44 @@ class RVQTransformer (Net2NetTransformer):
     def encode_to_c(self, c, codebook_level=None):
         if codebook_level is None:
             codebook_level=self.c_codebook_level
-        #print('=====encode_to_c called=====')
-        #print('c.shape:',c.shape)
-        if self.downsample_cond_size > -1:
-            c = F.interpolate(c, size=(self.downsample_cond_size, self.downsample_cond_size))
+
         if self.be_unconditional:
-            if self.use_sos_cond:
-                #print('======generating SOS for unconditional case========')
-                #print('c.shape:',c.shape)
-                hidden_dim=self.get_hidden_dim()
-                #print('get_hidden_dim:',hidden_dim)
+            hidden_dim=self.get_hidden_dim()
+            bs=c.shape[0]
+            bchw=(bs,self.first_stage_config.params.embed_dim,hidden_dim,hidden_dim)
 
-                #Then replace them with sos tokens for dummy cond sequence
-                bs=c.shape[0]
-                quant_c, _, [_,_,indices] = self.sos_cond_stage.encode(c,bchw=(bs,self.first_stage_config.params.embed_dim,hidden_dim,hidden_dim))
-
-            else:
-                quant_c, _, [_,_,indices] = self.cond_stage_model.encode(c)
-            #print('quant_c.shape:',quant_c.shape)
-            bchw = quant_c.shape
+            #Condition on image made up of SOS tokens for unconditional case
+            quant_c = torch.ones(*bchw,device=c.device) * self.sos_token
             quant_c = einops.rearrange(quant_c, 'b c h w -> b (h w) c')
+            indices = None
+
         else:
             pre_quant = self.cond_stage_model.encode_to_prequant(c)
             all_quantized, all_indices, all_losses = self.cond_stage_model.make_quantizations(pre_quant)
-            #print('all_quantized[:self.c_codebook_level+1].shape:', all_quantized[:self.c_codebook_level+1].shape)
+
             #The quantizations in all_quantized are already cumulative over the codebook levels
             quant_c = all_quantized[codebook_level]
+
             #print('quant_c.shape:',quant_c.shape)
             #print('all_indices len: ',len(all_indices))
             indices=all_indices[codebook_level]
-            #print('indices.shape:', indices.shape)
-            #indices = einops.rearrange(indices, '(b h w) -> b (h w)') (?)
-            indices = indices.view(quant_c.shape[0], -1) 
+            indices = einops.rearrange(indices, '(b hw) -> b hw', b=quant_c.shape[0]) 
+
             bchw = quant_c.shape
             quant_c = einops.rearrange(quant_c, 'b c h w -> b (h w) c')
-            #print('reshaped: quant_c.shape:',quant_c.shape)
-            #quant_c = quant_c.view(quant_c.shape[0],-1)
-        #quant_c, _, [_,_,indices] = self.cond_stage_model.encode(c)
-        #print('encode_to_c done')
+
         return quant_c, indices, bchw
 
-    #TODO: Change this to take preceding codebook level as conditioning stage
     def init_cond_stage_from_ckpt(self, config):
-        #print('init_cond_stage_from_ckpt called=============')
-
-        if (config == "__previous_codebook_level__" or self.cond_on_prev_level) and self.z_codebook_level==0:
-                print('First stage has lowest codebook level. Proceeding without cond stage.')
-                self.be_unconditional=True
-                self.cond_on_prev_level=False
-
-        if (config == "__previous_codebook_level__" or self.cond_on_prev_level) and self.z_codebook_level>0:
-                print('First stage codebook level is {}. Using codebook_level {} as cond stage'.format(self.z_codebook_level,self.c_codebook_level))
-                #model = instantiate_from_config(self.first_stage_config)
-                #model = model.eval()
-                #model.train = disabled_train
-                #self.cond_stage_model = model
-                self.cond_stage_model = self.first_stage_model
-                self.cond_stage_key = self.first_stage_key
-
-        elif config == "__is_unconditional__" or self.be_unconditional:
-            print(f"Using no cond stage. Assuming the training is intended to be unconditional. "
-                  f"Prepending {self.sos_token} as a sos token.")
+        if self.z_codebook_level==0:
+            print('First stage has lowest codebook level. Using a dummy array of zeros as conditioning image.')
             self.be_unconditional = True
-            self.cond_stage_key = self.first_stage_key
-
-            if self.transformer_config.target=='taming.modules.transformer.mingpt.CodeGPT':
-                self.cond_stage_model = CodeGPT_SOSProvider(self.sos_token)
-            else:
-                self.cond_stage_model = SOSProvider(self.sos_token)
-
         else:
-            model = instantiate_from_config(config)
-            model = model.eval()
-            model.train = disabled_train
-            self.cond_stage_model = model
+            print('First stage codebook level is {}. Using codebook_level {} as cond stage'.format(self.z_codebook_level,self.c_codebook_level))
+            self.be_unconditional = False
+
+        self.cond_stage_model = self.first_stage_model
+        self.cond_stage_key = self.first_stage_key
 
             
     # one step to produce the logits
@@ -619,81 +553,36 @@ class RVQTransformer (Net2NetTransformer):
         z_quant, z_indices, _ = self.encode_to_z(x)
         c_quant, c_indices, _ = self.encode_to_c(c)
 
-        if self.training and self.pkeep < 1.0:
-            mask = torch.bernoulli(self.pkeep*torch.ones(z_indices.shape,
-                                                         device=z_indices.device))
-            mask = mask.round().to(dtype=torch.int64)
-            r_indices = torch.randint_like(z_indices, self.transformer.config.vocab_size)
-            a_indices = mask*z_indices+(1-mask)*r_indices
-        else:
-            a_indices = z_indices
-
-
-        #print('---------concatenating to cz_quants:')
-        #print('c_quant.shape:',c_quant.shape)
-        #print('z_quant.shape:',z_quant.shape)
-
         #TODO: Adapt joint training for unequal level sizes
         if self.joint_training:
             zlevel=self.z_codebook_level
-            #zlevel_encoding=self.get_zlevel_one_hot(x.device)
-            #zlevel_encoding=zlevel_encoding.expand(x.shape[0],x.shape[1],-1)
         else:
             zlevel=None
 
         if not self.transformer.cross_attention:
-            if self.cond_on_prev_level:
-                cz_quants = torch.cat((c_quant, z_quant), dim=1)
-            #TODO: Adjust unconditional case to work with CodeGPT instead of GPT as well!
-            else:
-                #print('a_indices.shape: ',a_indices.shape)
-                #print('c_indices.shape: ',c_indices.shape)
-                cz_indices = torch.cat((c_indices, a_indices), dim=1)
-                #print('Forward step, cz_indices=',cz_indices)
-                #print('Max Index = ', cz_indices.max())
+            cz_quants = torch.cat((c_quant, z_quant), dim=1)
 
-            if self.cond_on_prev_level: 
-                target = z_indices
-                #print('target.shape: ',target.shape)
-                #print('cz_quants.shape:', cz_quants.shape)
+            target = z_indices
+            #print('target.shape: ',target.shape)
+            #print('cz_quants.shape:', cz_quants.shape)
 
-                logits, _ = self.transformer(cz_quants[:,:-1,:], zlevel=zlevel)
-                #print('logits.shape: ',logits.shape)
+            logits, _ = self.transformer(cz_quants[:,:-1,:], zlevel=zlevel)
+            #print('logits.shape: ',logits.shape)
 
-                # cut off conditioning outputs - output i corresponds to p(z_i | z_{<i}, c)
-                logits = logits[:, c_quant.shape[1]-1:]
+            # cut off conditioning outputs - output i corresponds to p(z_i | z_{<i}, c)
+            logits = logits[:, c_quant.shape[1]-1:]
 
-                #print('logits.shape: ',logits.shape)
-            else:
-                # target includes all sequence elements (no need to handle first one
-                # differently because we are conditioning)
-                target = z_indices
-                #print('target.shape: ',target.shape)
-                # make the prediction
-                #print('cz_indices.shape:', cz_indices.shape)
-
-                logits, _ = self.transformer(cz_indices[:, :-1],zlevel=zlevel)
-
-                # cut off conditioning outputs - output i corresponds to p(z_i | z_{<i}, c)
-                logits = logits[:, c_indices.shape[1]-1:]
+            #print('logits.shape: ',logits.shape)
 
         else:
-            if self.cond_on_prev_level: 
-                #target = z_indices[:,:-1]
-                target = z_indices
-                #print('====Before forward')
-                #print('z_quant.shape: ',z_quant.shape)
-                #print('c_quant.shape: ',c_quant.shape)
-                logits, _ = self.transformer(z_quant[:,:-1,:], context = c_quant, zlevel=zlevel)
-                #logits, _ = self.transformer(z_quant, context = c_quant, zlevel=zlevel)
-                #print('logits.shape: ',logits.shape)
-            else:
-                target = z_indices
-                logits, _ = self.transformer(z_indices[:, :-1], context = a_indices,zlevel=zlevel)
-
-            # cut off output corresponding to sos token
-            #logits = logits[:, 1:]
-
+            #target = z_indices[:,:-1]
+            target = z_indices
+            #print('====Before forward')
+            #print('z_quant.shape: ',z_quant.shape)
+            #print('c_quant.shape: ',c_quant.shape)
+            logits, _ = self.transformer(z_quant[:,:-1,:], context = c_quant, zlevel=zlevel)
+            #logits, _ = self.transformer(z_quant, context = c_quant, zlevel=zlevel)
+            #print('logits.shape: ',logits.shape)
 
         return logits, target
 
@@ -705,14 +594,12 @@ class RVQTransformer (Net2NetTransformer):
             self.z_codebook_level = 0
             self.c_codebook_level = None
             self.be_unconditional = True
-            self.use_sos_cond = True
 
-            x, c = self.get_xc(batch, self.use_sos_cond)
+            x, c = self.get_xc(batch)
             logits, target = self(x, c)
             loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), target.reshape(-1))
 
             self.be_unconditional = False
-            self.use_sos_cond = False
 
             for z_lvl in range(1,self.first_stage_model.n_levels):
                 #print('==========loop, z_lvl=', z_lvl)
@@ -721,8 +608,6 @@ class RVQTransformer (Net2NetTransformer):
 
                 x, c = self.get_xc(batch)
                 logits, target = self(x, c)
-                #print(logits)
-                #print(target.max())
                 loss += F.cross_entropy(logits.reshape(-1, logits.size(-1)), target.reshape(-1))
 
         else:
@@ -744,10 +629,7 @@ class RVQTransformer (Net2NetTransformer):
 
         N = kwargs['N'] if 'N' in kwargs.keys() else 4
 
-        if lr_interface:
-            x, c = self.get_xc(batch, N, diffuse=False, upsample_factor=8)
-        else:
-            x, c = self.get_xc(batch, N)
+        x, c = self.get_xc(batch, N)
 
         x = x.to(device=self.device)
         c = c.to(device=self.device)
@@ -756,7 +638,8 @@ class RVQTransformer (Net2NetTransformer):
         quant_c, c_indices, c_bchw = self.encode_to_c(c)
 
         #TODO: Adapt half picture sampling to work with CodeGPT
-        if not self.cond_on_prev_level and not self.joint_training:
+        create_half_sample=False
+        if create_half_sample:
             #print('Creating half sample=========')
             # create a "half"" sample
             z_start_indices = z_indices[:,:z_indices.shape[1]//2]
@@ -777,134 +660,59 @@ class RVQTransformer (Net2NetTransformer):
         #print('quant_z.shape:,', quant_z.shape)
         #print('quant_c.shape:,', quant_c.shape)
 
-        #print('weights: ',self.transformer.tok_emb.weight)
-        # sample
-        if not self.cond_on_prev_level and not self.joint_training:
-            z_start_indices = z_indices[:, :0]
-            index_sample = self.sample(z_start_indices, c_indices,
-                                       steps=z_indices.shape[1],
-                                       temperature=temperature if temperature is not None else 1.0,
-                                       sample=True,
-                                       top_k=top_k if top_k is not None else min(100,self.transformer.config.vocab_size),
-                                       callback=callback if callback is not None else lambda k: None)
-
-            x_sample_nopix = self.decode_to_img(index_sample, z_bchw)
-
+        #print('===========normal sampling==========\n')
+        if self.transformer.cross_attention:
+            z_start_quants=quant_z[:, [0], :]
+            sample_steps = quant_z.shape[1]-1
         else:
-            #print('===========normal sampling==========\n')
-            #print('quant_c.shape:',quant_c.shape)
-            if self.transformer.cross_attention:
-                z_start_quants=quant_z[:, [0], :]
-                #print('z_start_quants.shape:',z_start_quants.shape)
-            else:
-                z_start_quants=quant_z[:, :0, :]
+            z_start_quants=quant_z[:, :0, :]
+            sample_steps = quant_z.shape[1]
 
-            sample_steps = quant_z.shape[1]-1 if self.transformer.cross_attention else quant_z.shape[1]
-            #print('z_start_quants.shape:',z_start_quants.shape)
-            index_sample = self.sample_codegpt(z_start_quants, quant_c,
-                                       steps=sample_steps,
-                                       temperature=temperature if temperature is not None else 1.0,
-                                       sample=True,
-                                       top_k=top_k if top_k is not None else min(100,self.transformer.config.vocab_size),
-                                       callback=callback if callback is not None else lambda k: None)
-
-            #x_sample_nopix = self.decode_to_img(index_sample, z_bchw)
-
-            #print('===================Before cond_and_pred_to_img')
-            #print('quant_c.shape:',quant_c.shape)
-            #print('index_sample.shape:',index_sample.shape)
-            if self.be_unconditional:
-                dummy_c = torch.zeros(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
-                #print('dummy_c.shape:',dummy_c.shape)
-                x_sample_nopix_sum = self.cond_and_pred_to_img(dummy_c, index_sample, z_bchw)
-            else:
-                x_sample_nopix_sum = self.cond_and_pred_to_img(quant_c, index_sample, z_bchw)
+        #print('z_start_quants.shape:',z_start_quants.shape)
+        index_sample = self.sample_codegpt(z_start_quants, quant_c,
+                                   steps=sample_steps,
+                                   temperature=temperature if temperature is not None else 1.0,
+                                   sample=True,
+                                   top_k=top_k if top_k is not None else min(100,self.transformer.config.vocab_size),
+                                   callback=callback if callback is not None else lambda k: None)
 
 
-        # det sample
-        z_start_indices = z_indices[:, :0]
+        if self.be_unconditional:
+            dummy_c = torch.zeros(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
+            x_sample_nopix_sum = self.cond_and_pred_to_img(dummy_c, index_sample, z_bchw)
+        else:
+            x_sample_nopix_sum = self.cond_and_pred_to_img(quant_c, index_sample, z_bchw)
 
-        if not self.cond_on_prev_level and not self.joint_training:
-            index_sample_det = self.sample(z_start_indices, c_indices,
+
+        #Det sample - deactivated
+        create_det_sample=False
+        if create_det_sample:
+            z_start_quants=quant_z[:, :0, :]
+            index_sample_det = self.sample_codegpt(z_start_quants, quant_c,
                                        steps=z_indices.shape[1],
                                        sample=False,
                                        callback=callback if callback is not None else lambda k: None)
-            x_sample_det = self.decode_to_img(index_sample_det, z_bchw)
-
-        #else:
-            #z_start_quants=quant_z[:, :0, :]
-            #index_sample_det = self.sample_codegpt(z_start_quants, quant_c,
-            #                           steps=z_indices.shape[1],
-            #                           sample=False,
-            #                           callback=callback if callback is not None else lambda k: None)
-
 
             if self.be_unconditional:
                 dummy_c = torch.zeros(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
-                #x_sample_nopix_sum = self.cond_and_pred_to_img(dummy_c, index_sample, z_bchw)
                 x_sample_det = self.cond_and_pred_to_img(dummy_c, index_sample_det, z_bchw)
             else:
-                #x_sample_nopix_sum = self.cond_and_pred_to_img(quant_c, index_sample, z_bchw)
                 x_sample_det = self.cond_and_pred_to_img(quant_c, index_sample_det, z_bchw)
 
-        # reconstruction
-        #x_rec = self.decode_to_img(z_indices, z_bchw)
 
+        #log input images, as well as conditioning and target image (both ResVQGAN reconstructions at different codebook levels)
         log_resvq = self.first_stage_model.log_images(batch)
         log["inputs"] = x
         log["reconstructions_target_lvl_{}".format(self.z_codebook_level)] = log_resvq["reconstructions_{}".format(self.z_codebook_level)]
 
-        if self.cond_on_prev_level and not self.joint_training:
+        if not self.joint_training:
             log["reconstructions_cond_lvl_{}".format(self.c_codebook_level)] = log_resvq["reconstructions_{}".format(self.c_codebook_level)]
-            #log["reconstructions_only_lvl_{}".format(self.z_codebook_level)] = x_rec
 
-
-        if self.cond_stage_key in ["objects_bbox", "objects_center_points"]:
-            figure_size = (x_rec.shape[2], x_rec.shape[3])
-            dataset = kwargs["pl_module"].trainer.datamodule.datasets["validation"]
-            label_for_category_no = dataset.get_textual_label_for_category_no
-            plotter = dataset.conditional_builders[self.cond_stage_key].plot
-            log["conditioning"] = torch.zeros_like(log["reconstructions"])
-            for i in range(quant_c.shape[0]):
-                log["conditioning"][i] = plotter(quant_c[i], label_for_category_no, figure_size)
-            log["conditioning_rec"] = log["conditioning"]
-        elif self.cond_stage_key != "image":
-            cond_rec = self.cond_stage_model.decode(quant_c)
-            if self.cond_stage_key == "segmentation":
-                # get image from segmentation mask
-                num_classes = cond_rec.shape[1]
-
-                c = torch.argmax(c, dim=1, keepdim=True)
-                c = F.one_hot(c, num_classes=num_classes)
-                c = c.squeeze(1).permute(0, 3, 1, 2).float()
-                c = self.cond_stage_model.to_rgb(c)
-
-                cond_rec = torch.argmax(cond_rec, dim=1, keepdim=True)
-                cond_rec = F.one_hot(cond_rec, num_classes=num_classes)
-                cond_rec = cond_rec.squeeze(1).permute(0, 3, 1, 2).float()
-                cond_rec = self.cond_stage_model.to_rgb(cond_rec)
-            log["conditioning_rec"] = cond_rec
-            log["conditioning"] = c
-
-        #print('Logging samples:===================')
-        #print('x_sample_nopix.shape:', x_sample_nopix.shape)
-        #print('x_sample_det.shape:', x_sample_det.shape)
-
-        if self.cond_on_prev_level or self.joint_training:
-            log["samples_nopix_lvl{}".format(self.z_codebook_level)] = x_sample_nopix_sum
-            #log["samples_det_sum_cond"] = x_sample_det_sum
-            #log["samples_nopix_only_residual"] = x_sample_nopix
-            #log["samples_det_only_residual"] = x_sample_det
-        else:
-            log["samples_nopix"] = x_sample_nopix
-            log["samples_det"] = x_sample_det
-            log["samples_half"] = x_sample
+        log["samples_nopix_lvl{}".format(self.z_codebook_level)] = x_sample_nopix_sum
+        #log["samples_det_sum_cond"] = x_sample_det_sum
 
         if return_quantized_sample:
-            #print('returning quantized sample\n')
-            #print('quant_c.shape:',quant_c.shape)
             quant_sample = self.quant_c_and_ind_to_next_cblvl(quant_c, index_sample, z_bchw)
-            #print('quant_sample.shape:',quant_sample.shape)
             return log, quant_sample
         else:
             return log
@@ -913,24 +721,17 @@ class RVQTransformer (Net2NetTransformer):
     @torch.no_grad()
     def log_images(self, batch, temperature=None, top_k=None, callback=None, lr_interface=False, log_ground_truth_upsampling=True, **kwargs):
         print('==========Starting Image Logging=========')
-        #print('head.weight(decoder):',self.transformer.head.weight)
-        #print('tok_emb.weight: ',self.transformer.tok_emb.weight)
 
         if not self.joint_training:
             logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface, **kwargs)
-
             return logs
 
         else:
-            #print('tok_emb.weight: ',self.transformer.tok_emb.weight)
             self.z_codebook_level = 0
             self.c_codebook_level = None
             self.be_unconditional = True
-            self.use_sos_cond = True
-            #self.cond_on_prev_level=False
 
             print('==========Logging level 0')
-            #print('tok_emb.weight: ',self.transformer.tok_emb.weight)
 
             if not self.end_to_end_sampling:
                 logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface,**kwargs)
@@ -938,19 +739,15 @@ class RVQTransformer (Net2NetTransformer):
             else:
                 logs, quant_sample = self.log_images_one_lvl(batch, return_quantized_sample=True, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface,**kwargs)
                 logs['sample_end2end_lvl0'] = logs['samples_nopix_lvl0']
-                #print('quant_sample.shape:',quant_sample.shape)
 
             self.be_unconditional = False
-            self.use_sos_cond = False
-            #self.cond_on_prev_level=True
 
             for z_lvl in range(1,self.first_stage_model.n_levels):
                 print('==========loop, z_lvl=', z_lvl)
-                #print('tok_emb.weight: ',self.transformer.tok_emb.weight)
                 self.z_codebook_level = z_lvl
                 self.c_codebook_level = z_lvl-1
 
-                #Sample residuals to get from ground truth lvl n to lvl n+1
+                #Sample residuals to get from ground truth lvl n to lvl n+1 (errors of previous levels are not propagated for this case)
                 if log_ground_truth_upsampling:
                     new_logs = self.log_images_one_lvl(batch, temperature=temperature, top_k=top_k, callback=callback, lr_interface=lr_interface,**kwargs)
                 else:
@@ -967,12 +764,9 @@ class RVQTransformer (Net2NetTransformer):
                         z_start_quants = quant_sample[:, :0, :]
 
                     #Sample new residual indices, using last quantized sample as conditioning
-                    #print('===========end2end sampling==========\n')
-                    #print('quant_sample.shape:',quant_sample.shape)
                     new_sample_ind = self.sample_codegpt(z_start_quants, c=quant_sample,
                                                steps=quant_sample.shape[1],
                                                sample=True)
-                    #print('new_sample_ind.shape:',new_sample_ind.shape)
 
 
                     #Add up predictions and last level quants to new quantized sample
@@ -995,9 +789,12 @@ class RVQTransformer (Net2NetTransformer):
         #print('x.shape:',x.shape)
         #print('c.shape:',c.shape)
         #print('cross_attention:',self.transformer.cross_attention)
+
+        assert torch.isnan(c).sum()==0
+        assert torch.isnan(x).sum()==0
+
         if not self.transformer.cross_attention:
             x = torch.cat((c,x),dim=1)
-            assert torch.isnan(x).sum()==0
 
         if self.joint_training:
             zlevel=self.z_codebook_level
@@ -1007,26 +804,17 @@ class RVQTransformer (Net2NetTransformer):
         block_size = self.transformer.get_block_size()
         assert not self.transformer.training
 
-        #print('Before loop in sample function')
-        #print('Steps= ',steps)
         x_indices = torch.zeros((x.shape[0],0),device=x.device,dtype=torch.long)
         for k in range(steps):
             assert torch.isnan(x).sum()==0
             callback(k)
             assert x.size(1) <= block_size # make sure model can see conditioning
-            #x_cond = x if x.size(1) <= block_size else x[:, -block_size:]  # crop context if needed
 
             if self.transformer.cross_attention:
-                #print('In sample loop, x.shape: ',x.shape)
-                #print('In sample loop, c.shape: ',c.shape)
                 logits, _ = self.transformer(x, context=c, zlevel=zlevel)
             else:
-                #print('Sample, x=',x)
-                #print('Sample, x.shape=',x.shape)
                 logits, _ = self.transformer(x, zlevel=zlevel)
-                #print('Sample, logits=', logits)
 
-            #print('in sample, logits.shape: ', logits.shape)
             # pluck the logits at the final step and scale by temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop probabilities to only the top k options
@@ -1034,33 +822,21 @@ class RVQTransformer (Net2NetTransformer):
                 logits = self.top_k_logits(logits, top_k)
             # apply softmax to convert to probabilities
             probs = F.softmax(logits, dim=-1)
-           # print('probs:',probs)
+
             # sample from the distribution or take the most likely
             if sample:
                 ix = torch.multinomial(probs, num_samples=1)
             else:
                 _, ix = torch.topk(probs, k=1, dim=-1)
 
-            #print('ix.shape:',ix.shape)
-            #print('x_indices.shape:', x_indices.shape)
             x_indices=torch.cat((x_indices,ix), dim=1)
             bhwc=(ix.shape[0],1,1,x.shape[2])
             ix_quant = self.first_stage_model.quantizers[self.z_codebook_level].get_codebook_entry(ix,shape=bhwc)
-            #return shape is bchw
-            #print('ix_quant.shape:',ix_quant.shape)
             ix_quant=einops.rearrange(ix_quant, 'b c h w  -> b (h w) c')
-            # append to the sequence and continue
-            #print('x.shape:',x.shape)
-            #print('ix_quant.shape:',ix_quant.shape)
+
+            # append to the sequence and continue with next iteration
             x = torch.cat((x, ix_quant), dim=1)
 
-        #SOS token is only added to z_start_quants, not to indices, no need to cut it off
-        #if self.transformer.cross_attention:
-            # cut off sos token
-        #    x_indices = x_indices[:, 1:]
+        #SOS token and cond image are only added to z_start_quants, not to indices, no need to cut them off (different in original model where indices were used as inputs)
 
-        #else:
-            # cut off conditioning
-        #    x_indices = x_indices[:, c.shape[1]:]
-        #print('return x_indices, shape:',x_indices.shape)
         return x_indices

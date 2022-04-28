@@ -4,7 +4,6 @@ model:
   params:
     z_codebook_level: 1
     unconditional: False
-    cond_on_prev_level: True
     joint_training: True
     end_to_end_sampling: True
     sos_token: -1
@@ -22,7 +21,7 @@ model:
     first_stage_config:
       target: taming.models.vqgan.ResidualVQModel
       params:
-        ckpt_path: "/export/home/fmayer/taming-transformers/logs/2022-04-02T17-15-31_resvq_6x2_seqlen16x16/checkpoints/epoch=000003.ckpt"
+        ckpt_path: "/export/scratch/fmayer/taming-logs/lsun_churches_resvqs_newer_runs/2022-04-02T17-15-31_resvq_6x2_seqlen16x16/checkpoints/epoch=000004.ckpt"
         n_embed: 666
         level_sizes:
         - 1.0
@@ -76,8 +75,8 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 3
-    num_workers: 6
+    batch_size: 2
+    num_workers: 2
     train:
       target: taming.data.lsun.LSUNChurchesTrain
       params:
