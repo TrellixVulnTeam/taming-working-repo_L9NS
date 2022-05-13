@@ -2,11 +2,8 @@ model:
   base_learning_rate: 4.5e-06
   target: taming.models.cond_transformer.RVQTransformer
   params:
-    z_codebook_level: 1
-    unconditional: False
-    joint_training: True
-    end_to_end_sampling: True
-    sos_token: 0.
+    z_codebook_level: 0
+    unconditional: True
     transformer_config:
       target: taming.modules.transformer.mingpt.CodeGPT
       params:

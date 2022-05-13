@@ -1,0 +1,49 @@
+model:
+  base_learning_rate: 4.5e-6
+  target: taming.models.vqgan.ResidualVQModel
+  params:
+    n_embed: 666 #dummy, unused
+    level_sizes: [1.0, 1.0, 1.0, 1.0]   # relative to encoder-output, e.g. for 32x32: 8x8 -> 16x16 -> 32x32 -> 32x32
+    layer_weights: [0., 0., 0., 1.]
+    n_embeds: [4096,4096,4096,4096]
+    n_levels: 4
+    embed_dim: 1024
+    monitor: "val/rec_loss"
+
+    ddconfig:
+      double_z: False
+      z_channels: 256
+      resolution: 256
+      in_channels: 3
+      out_ch: 3
+      ch: 128
+      ch_mult: [1,2,2,2,2,4]  # num_down = len(ch_mult)-1
+      num_res_blocks: 2
+      attn_resolutions: []
+      dropout: 0.0
+
+    lossconfig:
+      target: taming.modules.losses.vqperceptual.ResidualVQLPIPSWithDiscriminator
+      params:
+        quantize_scale_weights: [1., 1., 1., 1.]
+        codebook_weight: 1.0
+        n_classes: [4096, 4096, 4096, 4096]
+        use_actnorm: False
+        disc_start: 40001
+        disc_weight: 1.0
+        disc_in_channels: 3
+
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 7
+    num_workers: 14
+    train:
+      target: taming.data.lsun.LSUNChurchesTrain
+    validation:
+      target: taming.data.lsun.LSUNChurchesValidation
+
+lightning:
+  modelcheckpoint:
+    params:
+      save_top_k: -1

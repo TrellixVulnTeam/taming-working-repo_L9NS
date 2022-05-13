@@ -384,6 +384,8 @@ class RVQTransformer (Net2NetTransformer):
         self.vocab_size=first_stage_config.params.n_embeds[z_codebook_level]
         transformer_config.params.vocab_size=self.vocab_size
 
+        transformer_config.params.in_channels = first_stage_config.params.embed_dim
+
         if joint_training:
             transformer_config.params.n_codebook_levels = first_stage_config.params.n_levels
 
@@ -418,6 +420,7 @@ class RVQTransformer (Net2NetTransformer):
         self.sos_token=sos_token
 
         self.sos_emb = nn.Parameter(torch.rand(1,1,transformer_config.params.in_channels))
+        self.uncond_emb = nn.Parameter(torch.zeros(1,1,transformer_config.params.in_channels))
 
         #print('self.device=',self.device)
         #self.transformer_config.params.device=self.device
@@ -512,9 +515,10 @@ class RVQTransformer (Net2NetTransformer):
             bs=c.shape[0]
             bchw=(bs,self.first_stage_config.params.embed_dim,hidden_dim,hidden_dim)
 
-            #Condition on image made up of SOS tokens for unconditional case
-            quant_c = torch.ones(*bchw,device=c.device) * self.sos_token
-            quant_c = einops.rearrange(quant_c, 'b c h w -> b (h w) c')
+            #Condition on image made up of trainable 'no input embedding' vectors for unconditional case
+            quant_c = self.uncond_emb.expand(bs,hidden_dim**2,-1)
+            #quant_c = torch.ones(*bchw,device=c.device) * self.sos_token
+            #quant_c = einops.rearrange(quant_c, 'b c h w -> b (h w) c')
             indices = None
 
         else:
@@ -678,7 +682,8 @@ class RVQTransformer (Net2NetTransformer):
 
 
         if self.be_unconditional:
-            dummy_c = torch.zeros(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
+            #dummy_c = torch.zeros(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
+            dummy_c = self.uncond_emb.expand(z_bchw[0],z_bchw[2]*z_bchw[3],-1)
             x_sample_nopix_sum = self.cond_and_pred_to_img(dummy_c, index_sample, z_bchw)
         else:
             x_sample_nopix_sum = self.cond_and_pred_to_img(quant_c, index_sample, z_bchw)
@@ -705,7 +710,7 @@ class RVQTransformer (Net2NetTransformer):
         log["inputs"] = x
         log["reconstructions_target_lvl_{}".format(self.z_codebook_level)] = log_resvq["reconstructions_{}".format(self.z_codebook_level)]
 
-        if not self.joint_training:
+        if not self.joint_training and self.z_codebook_level>0:
             log["reconstructions_cond_lvl_{}".format(self.c_codebook_level)] = log_resvq["reconstructions_{}".format(self.c_codebook_level)]
 
         log["samples_nopix_lvl{}".format(self.z_codebook_level)] = x_sample_nopix_sum
