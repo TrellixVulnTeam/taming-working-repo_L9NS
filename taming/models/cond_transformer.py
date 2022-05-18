@@ -938,13 +938,14 @@ class RVQDepthTransformer(RVQTransformer):
         return loss
 
     #Takes indices in shape (bs, (h*w), depth), decodes them to one image for each cb level, writes them in logs    
-    def indices_to_images(self,indices,log,bchw,x):
+    def indices_to_images(self,indices,log,desc,x):
+        bchw = (indices.shape[0],self.first_stage_config.params.embed_dim,self.get_hidden_dim(),self.get_hidden_dim())
         quant_lvl = torch.zeros(bchw[0],bchw[2]*bchw[3],bchw[1],device=x.device,dtype=x.dtype)
 #
         for cb_lvl in range(indices.shape[2]):
             quant_lvl = self.quant_c_and_ind_to_next_cblvl(quant_lvl,indices[:,:,cb_lvl],bchw) 
             sample_image = self.first_stage_model.decode(quant_lvl)
-            log['sample_lvl_{}'.format(cb_lvl)] = sample_image
+            log['{}_lvl_{}'.format(desc,cb_lvl)] = sample_image
 
             quant_lvl = einops.rearrange(quant_lvl, 'b c h w -> b (h w) c')
 
@@ -965,31 +966,23 @@ class RVQDepthTransformer(RVQTransformer):
         c = c.to(device=self.device)
 
         x_ind = self.get_all_quant_indices(x)
-        x_ind = einops.rearrange(x_ind, 'b s d -> b (s d)')
-        #print('x_ind.shape (b (s d)):',x_ind.shape)
 
-        sample_steps = x_ind.shape[1]
-        x_start = x_ind[:,:0]
-
-        #print('z_start_quants.shape:',z_start_quants.shape)
         index_sample = self.transformer.generate(default_batch_size=N)
-        #index_sample = self.sample_depth_transformer(x_start, c, steps=sample_steps)
         print('Sampling done. index_sample.shape:',index_sample.shape)
 
-        #index_sample = einops.rearrange(index_sample,'b (s d) -> b s d', s=self.get_hidden_dim()**2)
-
-        bchw = (index_sample.shape[0],self.first_stage_config.params.embed_dim,self.get_hidden_dim(),self.get_hidden_dim())
-
-        log = self.indices_to_images(index_sample,log,bchw,x)
+        log = self.indices_to_images(index_sample,log,'sample',x)
 
 
         half_sample=True
         if half_sample:
             # create a "half"" sample
-            x_start = x_ind[:N,:x_ind.shape[1]//2]
+            x_start = x_ind[:,:x_ind.shape[1]//2,:]
+            x_start = einops.rearrange(x_start, 'b s d -> b (s d)')
+            print('x_start.shape:',x_start.shape)
             index_half = self.transformer.generate(prime=x_start)
             print('Sampling done. index_half.shape:',index_half.shape)
-            log = self.indices_to_images(index_half,log,bchw,x)
+
+            log = self.indices_to_images(index_half,log,'sample_half',x)
 
         log_resvq = self.first_stage_model.log_images(batch)
         log["inputs"] = x
