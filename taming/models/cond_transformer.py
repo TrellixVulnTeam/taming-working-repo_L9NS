@@ -7,6 +7,7 @@ import einops
 
 from main import instantiate_from_config
 from taming.modules.util import SOSProvider
+from taming.modules.transformer.rqtransformer import RQTransformer
 
 
 def disabled_train(self, mode=True):
@@ -338,8 +339,9 @@ class Net2NetTransformer(pl.LightningModule):
 
         # special case the position embedding parameter in the root GPT module as not decayed
         no_decay.add('pos_emb')
-        if self.transformer.cross_attention:
-            no_decay.add('context_pos_emb')
+        if hasattr(self.transformer,'cross_attention'):
+            if self.transformer.cross_attention:
+                no_decay.add('context_pos_emb')
         if self.joint_training:
             no_decay.add('level_emb')
             if self.transformer.cross_attention:
@@ -845,3 +847,236 @@ class RVQTransformer (Net2NetTransformer):
         #SOS token and cond image are only added to z_start_quants, not to indices, no need to cut them off (different in original model where indices were used as inputs)
 
         return x_indices
+
+
+
+class RVQDepthTransformer(RVQTransformer):
+    def __init__(self,
+                 transformer_config,
+                 first_stage_config,
+                 cond_stage_config,
+                 permuter_config=None,
+                 ckpt_path=None,
+                 ignore_keys=[],
+                 first_stage_key="image",
+                 cond_stage_key="depth",
+                 downsample_cond_size=-1,
+                 pkeep=1.0,
+                 sos_token=0.,
+                 unconditional=False,
+                 z_codebook_level=0,
+                 joint_training=False,
+                 end_to_end_sampling=False,
+                 ):
+        super().__init__(
+                 transformer_config,
+                 first_stage_config,
+                 cond_stage_config,
+                 permuter_config,
+                 ckpt_path,
+                 ignore_keys,
+                 first_stage_key,
+                 cond_stage_key,
+                 downsample_cond_size,
+                 pkeep,
+                 sos_token,
+                 unconditional,
+                 z_codebook_level,
+                 joint_training,
+                 end_to_end_sampling)
+
+        del(self.transformer)
+
+        assert(len(set(self.first_stage_config.params.n_embeds))==1)
+        cb_size = self.first_stage_config.params.n_embeds[0]
+        transformer_token_dim = self.transformer_config.params.n_embd
+        n_cb_levels = self.first_stage_config.params.n_levels
+
+        max_spatial_seq_len = self.transformer_config.params.block_size 
+
+        n_spatial_transf_layers = self.transformer_config.params.n_layer
+        n_depth_transf_layers = 4
+
+        n_heads = self.transformer_config.params.n_head
+        head_dim = transformer_token_dim // n_heads
+        assert (transformer_token_dim % n_heads == 0)
+
+        self.transformer = RQTransformer(
+                num_tokens = cb_size,
+                dim = transformer_token_dim,
+                max_spatial_seq_len = max_spatial_seq_len,
+                depth_seq_len = n_cb_levels,
+                spatial_layers = n_spatial_transf_layers,
+                depth_layers = n_depth_transf_layers,
+                dim_head = head_dim,
+                heads = n_heads)
+
+    def get_all_quant_indices(self, x):
+        pre_quant = self.first_stage_model.encode_to_prequant(x)
+        _, x_ind, _ = self.first_stage_model.make_quantizations(pre_quant)
+
+        x_ind=torch.stack(x_ind,dim=1)
+        x_ind=einops.rearrange(x_ind, '(b s) d -> b s d', s=self.get_hidden_dim()**2)
+        #print('x_ind.shape:',x_ind.shape)
+        return x_ind
+
+
+    def forward(self, x, c):
+        x_ind = self.get_all_quant_indices(x)
+        logits = self.transformer(x_ind)
+        target = x_ind
+
+        return logits, target
+
+    #TODO: Loss Function for CodeGPT version with vector input!
+    def shared_step(self, batch, batch_idx):
+        #print('=====================shared_step===============')
+        x, c = self.get_xc(batch)
+        x_ind = self.get_all_quant_indices(x)
+        loss = self.transformer(x_ind, return_loss = True)
+
+        return loss
+
+    #Takes indices in shape (bs, (h*w), depth), decodes them to one image for each cb level, writes them in logs    
+    def indices_to_images(self,indices,log,bchw,x):
+        quant_lvl = torch.zeros(bchw[0],bchw[2]*bchw[3],bchw[1],device=x.device,dtype=x.dtype)
+#
+        for cb_lvl in range(indices.shape[2]):
+            quant_lvl = self.quant_c_and_ind_to_next_cblvl(quant_lvl,indices[:,:,cb_lvl],bchw) 
+            sample_image = self.first_stage_model.decode(quant_lvl)
+            log['sample_lvl_{}'.format(cb_lvl)] = sample_image
+
+            quant_lvl = einops.rearrange(quant_lvl, 'b c h w -> b (h w) c')
+
+        return log
+
+        
+
+    @torch.no_grad()
+    def log_images(self, batch, **kwargs):
+        print('=====log_images called=====')
+        log = dict()
+
+        N = kwargs['N'] if 'N' in kwargs.keys() else 4
+
+        x, c = self.get_xc(batch, N)
+
+        x = x.to(device=self.device)
+        c = c.to(device=self.device)
+
+        x_ind = self.get_all_quant_indices(x)
+        x_ind = einops.rearrange(x_ind, 'b s d -> b (s d)')
+        #print('x_ind.shape (b (s d)):',x_ind.shape)
+
+        sample_steps = x_ind.shape[1]
+        x_start = x_ind[:,:0]
+
+        #print('z_start_quants.shape:',z_start_quants.shape)
+        index_sample = self.transformer.generate(default_batch_size=N)
+        #index_sample = self.sample_depth_transformer(x_start, c, steps=sample_steps)
+        print('Sampling done. index_sample.shape:',index_sample.shape)
+
+        #index_sample = einops.rearrange(index_sample,'b (s d) -> b s d', s=self.get_hidden_dim()**2)
+
+        bchw = (index_sample.shape[0],self.first_stage_config.params.embed_dim,self.get_hidden_dim(),self.get_hidden_dim())
+
+        log = self.indices_to_images(index_sample,log,bchw,x)
+
+
+        half_sample=True
+        if half_sample:
+            # create a "half"" sample
+            x_start = x_ind[:N,:x_ind.shape[1]//2]
+            index_half = self.transformer.generate(prime=x_start)
+            print('Sampling done. index_half.shape:',index_half.shape)
+            log = self.indices_to_images(index_half,log,bchw,x)
+
+        log_resvq = self.first_stage_model.log_images(batch)
+        log["inputs"] = x
+        log["reconstructions_target_lvl_{}".format(self.z_codebook_level)] = log_resvq["reconstructions_{}".format(self.z_codebook_level)]
+
+        return log
+
+
+    def sample_depth_transformer(self, x_indices, c, steps):
+
+        assert torch.isnan(c).sum()==0
+        assert torch.isnan(x_indices).sum()==0
+
+        #x = torch.cat((c,x_indices),dim=1)
+        #print('x_indices.shape:',x_indices.shape)
+
+        block_size = self.transformer.max_spatial_seq_len
+        assert not self.transformer.training
+
+        for k in range(steps):
+            assert torch.isnan(x_indices).sum()==0
+            assert x_indices.size(1) <= block_size # make sure model can see conditioning
+
+            logits = self.transformer(x_indices)
+            #print('logits.shape:',logits.shape)
+
+            # apply softmax to convert to probabilities
+            probs = F.softmax(logits[:,0,:], dim=-1)
+            #print('probs.shape:',probs.shape)
+            assert(probs.isnan().sum()==0)
+
+            ix = torch.multinomial(probs, num_samples=1)
+
+            x_indices = torch.cat((x_indices,ix), dim=1)
+
+        return x_indices
+
+
+    def configure_optimizers(self):
+        """
+        Following minGPT:
+        This long function is unfortunately doing something very simple and is being very defensive:
+        We are separating out all parameters of the model into two buckets: those that will experience
+        weight decay for regularization and those that won't (biases, and layernorm/embedding weights).
+        We are then returning the PyTorch optimizer object.
+        """
+        # separate out all parameters to those that will and won't experience regularizing weight decay
+        decay = set()
+        no_decay = set()
+        whitelist_weight_modules = (torch.nn.Linear, )
+        blacklist_weight_modules = (torch.nn.LayerNorm, torch.nn.Embedding)
+        for mn, m in self.transformer.named_modules():
+            for pn, p in m.named_parameters():
+                fpn = '%s.%s' % (mn, pn) if mn else pn # full param name
+
+                if pn.endswith('bias'):
+                    # all biases will not be decayed
+                    no_decay.add(fpn)
+                elif pn.endswith('weight') and isinstance(m, whitelist_weight_modules):
+                    # weights of whitelist modules will be weight decayed
+                    decay.add(fpn)
+                elif pn.endswith('weight') and isinstance(m, blacklist_weight_modules):
+                    # weights of blacklist modules will NOT be weight decayed
+                    no_decay.add(fpn)
+
+        # special case the position embedding parameter in the root GPT module as not decayed
+        no_decay.add('spatial_start_token')
+        if hasattr(self.transformer,'cross_attention'):
+            if self.transformer.cross_attention:
+                no_decay.add('context_pos_emb')
+        if self.joint_training:
+            no_decay.add('level_emb')
+            if self.transformer.cross_attention:
+                no_decay.add('context_level_emb')
+
+        # validate that we considered every parameter
+        param_dict = {pn: p for pn, p in self.transformer.named_parameters()}
+        inter_params = decay & no_decay
+        union_params = decay | no_decay
+        assert len(inter_params) == 0, "parameters %s made it into both decay/no_decay sets!" % (str(inter_params), )
+        assert len(param_dict.keys() - union_params) == 0, "parameters %s were not separated into either decay/no_decay set!" \
+                                                    % (str(param_dict.keys() - union_params), )
+
+        # create the pytorch optimizer object
+        optim_groups = [
+            {"params": [param_dict[pn] for pn in sorted(list(decay))], "weight_decay": 0.01},
+            {"params": [param_dict[pn] for pn in sorted(list(no_decay))], "weight_decay": 0.0},
+        ]
+        optimizer = torch.optim.AdamW(optim_groups, lr=self.learning_rate, betas=(0.9, 0.95))
+        return optimizer
