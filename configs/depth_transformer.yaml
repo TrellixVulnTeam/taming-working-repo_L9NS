@@ -9,17 +9,17 @@ model:
       target: taming.modules.transformer.mingpt.CodeGPT
       params:
         cross_attention: False
-        in_channels: 1024
+        in_channels: 256
         #n_codebook_levels: 4
         vocab_size: 0    #Is overwritten for RVQTransformer
         block_size: 64
         n_layer: 24
         n_head: 16
-        n_embd: 256
+        n_embd: 1024
     first_stage_config:
       target: taming.models.vqgan.ResidualVQModel
       params:
-        ckpt_path: "/export/scratch/fmayer/taming-logs/resvq_lee_setup/2022-04-14T14-49-10_lee_2022_setup_8x8_shared_codebook/checkpoints/epoch=000004.ckpt"
+        ckpt_path: "/export/home/fmayer/taming-transformers/logs/2022-05-19T15-13-12_lee_shared_cb_dim256/checkpoints/last.ckpt"
         n_embed: 666
         level_sizes:
         - 1.0
@@ -38,7 +38,7 @@ model:
         - 16384
         n_levels: 4
         shared_codebook: True
-        embed_dim: 1024
+        embed_dim: 256
         monitor: val/rec_loss
         ddconfig:
           double_z: false

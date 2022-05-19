@@ -887,6 +887,8 @@ class RVQDepthTransformer(RVQTransformer):
 
         del(self.transformer)
 
+        self.depth_transformer_model=True
+
         assert(len(set(self.first_stage_config.params.n_embeds))==1)
         cb_size = self.first_stage_config.params.n_embeds[0]
         transformer_token_dim = self.transformer_config.params.n_embd
@@ -955,10 +957,14 @@ class RVQDepthTransformer(RVQTransformer):
 
     @torch.no_grad()
     def log_images(self, batch, **kwargs):
-        print('=====log_images called=====')
+        #print('=====log_images called=====')
         log = dict()
 
         N = kwargs['N'] if 'N' in kwargs.keys() else 4
+
+        temperature = kwargs['temperature'] if 'temperature' in kwargs.keys() else 0.5
+        filter_thres = kwargs['filter_thres'] if 'filter_thres' in kwargs.keys() else 0.9
+        half_sample = kwargs['half_sample'] if 'half_sample' in kwargs.keys() else False
 
         x, c = self.get_xc(batch, N)
 
@@ -967,20 +973,19 @@ class RVQDepthTransformer(RVQTransformer):
 
         x_ind = self.get_all_quant_indices(x)
 
-        index_sample = self.transformer.generate(default_batch_size=N)
-        print('Sampling done. index_sample.shape:',index_sample.shape)
+        index_sample = self.transformer.generate(default_batch_size=N,temperature=temperature,filter_thres= filter_thres)
+        #print('Sampling done. index_sample.shape:',index_sample.shape)
 
         log = self.indices_to_images(index_sample,log,'sample',x)
 
 
-        half_sample=True
         if half_sample:
             # create a "half"" sample
             x_start = x_ind[:,:x_ind.shape[1]//2,:]
             x_start = einops.rearrange(x_start, 'b s d -> b (s d)')
-            print('x_start.shape:',x_start.shape)
-            index_half = self.transformer.generate(prime=x_start)
-            print('Sampling done. index_half.shape:',index_half.shape)
+            #print('x_start.shape:',x_start.shape)
+            index_half = self.transformer.generate(prime=x_start,temperature=temperature, filter_thres=filter_thres)
+            #print('Sampling done. index_half.shape:',index_half.shape)
 
             log = self.indices_to_images(index_half,log,'sample_half',x)
 
