@@ -964,7 +964,7 @@ class RVQDepthTransformer(RVQTransformer):
 
         temperature = kwargs['temperature'] if 'temperature' in kwargs.keys() else 0.5
         filter_thres = kwargs['filter_thres'] if 'filter_thres' in kwargs.keys() else 0.9
-        half_sample = kwargs['half_sample'] if 'half_sample' in kwargs.keys() else False
+        half_sample = kwargs['half_sample'] if 'half_sample' in kwargs.keys() else True
 
         x, c = self.get_xc(batch, N)
 
@@ -1076,5 +1076,16 @@ class RVQDepthTransformer(RVQTransformer):
             {"params": [param_dict[pn] for pn in sorted(list(decay))], "weight_decay": 0.01},
             {"params": [param_dict[pn] for pn in sorted(list(no_decay))], "weight_decay": 0.0},
         ]
+
+            
         optimizer = torch.optim.AdamW(optim_groups, lr=self.learning_rate, betas=(0.9, 0.95))
-        return optimizer
+
+        cosine_sched=True
+
+        if cosine_sched:
+            cos_sched = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=0, last_epoch= -1, verbose=False)
+
+            return {'optimizer':optimizer, 'lr_scheduler':cos_sched}
+
+        else:
+            return optimizer

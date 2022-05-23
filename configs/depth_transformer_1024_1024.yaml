@@ -1,0 +1,81 @@
+model:
+  base_learning_rate: 4.5e-06
+  target: taming.models.cond_transformer.RVQDepthTransformer
+  params:
+    z_codebook_level: 3
+    unconditional: False
+    joint_training: False
+    transformer_config:
+      target: taming.modules.transformer.mingpt.CodeGPT
+      params:
+        cross_attention: False
+        in_channels: 1024
+        #n_codebook_levels: 4
+        vocab_size: 0    #Is overwritten for RVQTransformer
+        block_size: 64
+        n_layer: 24
+        n_head: 16
+        n_embd: 1024
+    first_stage_config:
+      target: taming.models.vqgan.ResidualVQModel
+      params:
+        ckpt_path: "/export/scratch/fmayer/taming-logs/resvq_lee_setup/2022-04-14T14-49-10_lee_2022_setup_8x8_shared_codebook/checkpoints/epoch=000004.ckpt"
+        n_embed: 666
+        level_sizes:
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        layer_weights:
+        - 0.0
+        - 0.0
+        - 0.0
+        - 1.0
+        n_embeds:
+        - 16384
+        - 16384
+        - 16384
+        - 16384
+        n_levels: 4
+        shared_codebook: True
+        embed_dim: 1024
+        monitor: val/rec_loss
+        ddconfig:
+          double_z: false
+          z_channels: 256
+          resolution: 256
+          in_channels: 3
+          out_ch: 3
+          ch: 128
+          ch_mult:
+          - 1
+          - 2
+          - 2
+          - 2
+          - 2
+          - 4
+          num_res_blocks: 2
+          attn_resolutions: []
+          dropout: 0.0
+        lossconfig:
+          target: taming.modules.losses.DummyLoss
+
+    cond_stage_config:
+      target: taming.modules.misc.coord.CoordStage
+      params:
+        n_embed: 4096
+        down_factor: 16
+
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 16
+    num_workers: 16
+    train:
+      target: taming.data.lsun.LSUNChurchesTrain
+      params:
+        size: 256
+    validation:
+      target: taming.data.lsun.LSUNChurchesValidation
+      params:
+        size: 256
