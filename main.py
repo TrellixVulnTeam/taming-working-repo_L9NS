@@ -397,19 +397,21 @@ if __name__ == "__main__":
             raise ValueError("Cannot find {}".format(opt.resume))
         if os.path.isfile(opt.resume):
             paths = opt.resume.split("/")
-            idx = len(paths)-paths[::-1].index("logs")+1
+            #idx = len(paths)-paths[::-1].index("logs")+1
+            idx = -2
             logdir = "/".join(paths[:idx])
             ckpt = opt.resume
         else:
-            assert os.path.isdir(opt.resume), opt.resume
-            logdir = opt.resume.rstrip("/")
-            ckpt = os.path.join(logdir, "checkpoints", "last.ckpt")
+            raise ValueError("Enter ckpt file as argument to -r")
+            #assert os.path.isdir(opt.resume), opt.resume
+            #logdir = opt.resume.rstrip("/")
+            #ckpt = os.path.join(logdir, "checkpoints", "last.ckpt")
 
         opt.resume_from_checkpoint = ckpt
         base_configs = sorted(glob.glob(os.path.join(logdir, "configs/*.yaml")))
         opt.base = base_configs+opt.base
         _tmp = logdir.split("/")
-        nowname = _tmp[_tmp.index("logs")+1]
+        nowname = _tmp[-1]
     else:
         if opt.name:
             name = "_"+opt.name

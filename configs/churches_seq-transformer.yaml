@@ -1,10 +1,12 @@
 model:
   base_learning_rate: 4.5e-06
-  target: taming.models.cond_transformer.RVQDepthTransformer
+  target: taming.models.cond_transformer.RVQTransformer
   params:
-    z_codebook_level: 3
+    z_codebook_level: 1
     unconditional: False
-    joint_training: False
+    joint_training: True
+    end_to_end_sampling: True
+    sos_token: 0.
     transformer_config:
       target: taming.modules.transformer.mingpt.CodeGPT
       params:
@@ -12,7 +14,7 @@ model:
         in_channels: 256
         #n_codebook_levels: 4
         vocab_size: 0    #Is overwritten for RVQTransformer
-        block_size: 64
+        block_size: 128
         n_layer: 24
         n_head: 16
         n_embd: 1024
@@ -37,8 +39,8 @@ model:
         - 16384
         - 16384
         n_levels: 4
-        shared_codebook: True
         embed_dim: 256
+        shared_codebook: True
         monitor: val/rec_loss
         ddconfig:
           double_z: false
@@ -69,8 +71,8 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 16
-    num_workers: 16
+    batch_size: 14
+    num_workers: 7
     train:
       target: taming.data.lsun.LSUNChurchesTrain
       params:

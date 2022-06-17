@@ -5,7 +5,7 @@ model:
     n_embed: 666 #dummy, unused
     level_sizes: [1.0, 1.0, 1.0, 1.0]   # relative to encoder-output, e.g. for 32x32: 8x8 -> 16x16 -> 32x32 -> 32x32
     layer_weights: [0., 0., 0., 1.]
-    n_embeds: [2048,2048,2048,2048]
+    n_embeds: [16384,16384,16384,16384]
     n_levels: 4
     shared_codebook: True
     embed_dim: 256
@@ -18,7 +18,7 @@ model:
       in_channels: 3
       out_ch: 3
       ch: 128
-      ch_mult: [1,2,2,2,2,4]  # num_down = len(ch_mult)-1
+      ch_mult: [1,2,2,2,4]  # num_down = len(ch_mult)-1
       num_res_blocks: 2
       attn_resolutions: []
       dropout: 0.0
@@ -28,7 +28,7 @@ model:
       params:
         quantize_scale_weights: [1., 1., 1., 1.]
         codebook_weight: 1.0
-        n_classes: [2048,2048,2048,2048]
+        n_classes: [16384,16384,16384,16384]
         use_actnorm: False
         disc_start: 40001
         disc_weight: 1.0
@@ -38,12 +38,8 @@ data:
   target: main.DataModuleFromConfig
   params:
     batch_size: 7
-    num_workers: 7
+    num_workers: 14
     train:
-      target: taming.data.faceshq.FFHQTrain
-      params:
-        size: 256
+      target: taming.data.lsun.LSUNChurchesTrain
     validation:
-      target: taming.data.faceshq.FFHQValidation
-      params:
-        size: 256
+      target: taming.data.lsun.LSUNChurchesValidation

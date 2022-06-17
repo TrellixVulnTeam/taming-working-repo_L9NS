@@ -38,7 +38,11 @@ class LSUNBase(Dataset):
 
     def __getitem__(self, i):
         example = dict((k, self.labels[k][i]) for k in self.labels)
-        image = Image.open(example["file_path_"])
+        try:
+            image = Image.open(example["file_path_"])
+        except:
+            print('Could not open file {}. Skipping to next file.',example["file_path_"])
+            return None
         if not image.mode == "RGB":
             image = image.convert("RGB")
 
@@ -83,10 +87,10 @@ class LSUNBedroomsValidation(LSUNBase):
 
 class LSUNCatsTrain(LSUNBase):
     def __init__(self, **kwargs):
-        super().__init__(txt_file="/export/home/fmayer/taming-transformers/data/lsun/cat_train.txt", data_root="/export/home/fmayer/taming-transformers/data/lsun/cat", **kwargs)
+        super().__init__(txt_file="/export/home/fmayer/taming-transformers/data/lsun/cat_train_cleaned.txt", data_root="/export/home/fmayer/taming-transformers/data/lsun/cat", **kwargs)
 
 
 class LSUNCatsValidation(LSUNBase):
     def __init__(self, flip_p=0., **kwargs):
-        super().__init__(txt_file="/export/home/fmayer/taming-transformers/data/lsun/cat_val.txt", data_root="/export/home/fmayer/taming-transformers/data/lsun/cat",
+        super().__init__(txt_file="/export/home/fmayer/taming-transformers/data/lsun/cat_val_cleaned.txt", data_root="/export/home/fmayer/taming-transformers/data/lsun/cat",
                          flip_p=flip_p, **kwargs)
