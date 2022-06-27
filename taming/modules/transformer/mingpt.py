@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from transformers import top_k_top_p_filtering
-from taming.modules.transformer.linatt import LinearAttention
+#from taming.modules.transformer.linatt import LinearAttention
 from taming.modules.transformer.crossatt import CrossAttTransformerBlock
 
 logger = logging.getLogger(__name__)

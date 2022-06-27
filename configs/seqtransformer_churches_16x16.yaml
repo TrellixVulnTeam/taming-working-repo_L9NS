@@ -1,0 +1,82 @@
+model:
+  base_learning_rate: 4.5e-06
+  target: taming.models.cond_transformer.RVQTransformer
+  params:
+    z_codebook_level: 1
+    unconditional: False
+    joint_training: True
+    end_to_end_sampling: True
+    sos_token: 0.
+    transformer_config:
+      target: taming.modules.transformer.mingpt.CodeGPT
+      params:
+        cross_attention: False
+        in_channels: 256
+        #n_codebook_levels: 4
+        vocab_size: 0    #Is overwritten for RVQTransformer
+        block_size: 512
+        n_layer: 24
+        n_head: 16
+        n_embd: 1024
+    first_stage_config:
+      target: taming.models.vqgan.ResidualVQModel
+      params:
+        ckpt_path: "/export/scratch/fmayer/taming-logs/resvq_lee_setup/2022-05-31T17-46-09_lee_setup_16x16_churches/checkpoints/epoch=000047.ckpt"
+        n_embed: 666
+        level_sizes:
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        layer_weights:
+        - 0.0
+        - 0.0
+        - 0.0
+        - 1.0
+        n_embeds:
+        - 16384
+        - 16384
+        - 16384
+        - 16384
+        n_levels: 4
+        embed_dim: 256
+        shared_codebook: True
+        monitor: val/rec_loss
+        ddconfig:
+          double_z: false
+          z_channels: 256
+          resolution: 256
+          in_channels: 3
+          out_ch: 3
+          ch: 128
+          ch_mult:
+          - 1
+          - 2
+          - 2
+          - 2
+          - 4
+          num_res_blocks: 2
+          attn_resolutions: []
+          dropout: 0.0
+        lossconfig:
+          target: taming.modules.losses.DummyLoss
+
+    cond_stage_config:
+      target: taming.modules.misc.coord.CoordStage
+      params:
+        n_embed: 4096
+        down_factor: 8
+
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 2
+    num_workers: 2
+    train:
+      target: taming.data.lsun.LSUNChurchesTrain
+      params:
+        size: 256
+    validation:
+      target: taming.data.lsun.LSUNChurchesValidation
+      params:
+        size: 256
