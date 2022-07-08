@@ -7,16 +7,16 @@ model:
     joint_training: False
     end_to_end_sampling: False
     input_1d: False
-    sos_token: 0
+    sos_token: -1
     s4_config:
       target: taming.modules.state_spaces.s4d.S4DList
       params:
-        n_layers: 12
-        tok_emb_dim: 1024
-        state_dim: 64
-        dropout: 0.0
+        n_layers: 24
+        tok_emb_dim: 1
+        state_dim: 16384
+        dropout: 0.5
         #codebook_size: 16384
-        channels: 1 # maps 1-dim to C-dim
+        channels: 64 # maps 1-dim to C-dim
         bidirectional: False
     first_stage_config:
       target: taming.models.vqgan.ResidualVQModel
@@ -71,7 +71,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 16
+    batch_size: 56
     num_workers: 8
     train:
       target: taming.data.faceshq.FFHQTrain

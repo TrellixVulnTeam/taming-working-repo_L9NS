@@ -173,7 +173,7 @@ class SSKernelDiag(nn.Module):
 
     def default_state(self, *batch_shape):
         C = _r2c(self.C)
-        state = torch.zeros(*batch_shape, self.H, self.N, dtype=C.dtype, device=C.device)
+        state = torch.rand(*batch_shape, self.H, self.N, dtype=C.dtype, device=C.device)
         return state
 
     def step(self, u, state):
@@ -409,13 +409,13 @@ class S4DBlock(nn.Module):
                 nn.Linear(tok_emb_dim*expand, tok_emb_dim)]
         self.ff = nn.Sequential(*ff)
 
-        self.channel_ff = nn.Linear(total_dim,tok_emb_dim)
+        self.channel_reduce = nn.Linear(total_dim,tok_emb_dim)
 
     def forward(self, x):
-        print('x.shape:',x.shape)
+        #print('x.shape:',x.shape)
         h, _ = self.s4(self.norm1(x))
-        print('h.shape:',h.shape)
-        h = self.channel_ff(h)
+        #print('h.shape:',h.shape)
+        h = self.channel_reduce(h)
         x = x + h
         x = x + self.ff(x)
 
@@ -423,6 +423,7 @@ class S4DBlock(nn.Module):
 
     def step(self, x, state):
         h,state = self.s4.step(self.norm1(x), state)
+        h = self.channel_reduce(h)
         x = x+h
         x = x + self.ff(x)
 
@@ -467,7 +468,8 @@ class S4DList(nn.Module):
         x=self.tok_emb(x)
         next_states = []
         for i in range(len(self.layers)):
-            x, ns = self.layers[i].step(x, states.pop())
+            #x, ns = self.layers[i].step(x, states.pop())
+            x, ns = self.layers[i].step(x, states[i])
             next_states.append(ns)
 
         x = self.output_linear(x)

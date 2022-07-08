@@ -173,86 +173,7 @@ class Net2NetS4(pl.LightningModule):
 
     @torch.no_grad()
     def log_images(self, batch, temperature=None, top_k=None, callback=None, lr_interface=False, **kwargs):
-        log = dict()
-
-        N = 4
-        if lr_interface:
-            x, c = self.get_xc(batch, N, diffuse=False, upsample_factor=8)
-        else:
-            x, c = self.get_xc(batch, N)
-        x = x.to(device=self.device)
-        c = c.to(device=self.device)
-
-        quant_z, z_indices = self.encode_to_z(x)
-        quant_c, c_indices = self.encode_to_c(c)
-
-        # create a "half"" sample
-        z_start_indices = z_indices[:,:z_indices.shape[1]//2]
-
-        index_sample = self.sample(z_start_indices, c_indices,
-                                   steps=z_indices.shape[1]-z_start_indices.shape[1],
-                                   temperature=temperature if temperature is not None else 1.0,
-                                   sample=True,
-                                   top_k=top_k if top_k is not None else min(100,self.transformer.config.vocab_size),
-                                   callback=callback if callback is not None else lambda k: None)
-
-        x_sample = self.decode_to_img(index_sample, quant_z.shape)
-
-        # sample
-        z_start_indices = z_indices[:, :0]
-        index_sample = self.sample(z_start_indices, c_indices,
-                                   steps=z_indices.shape[1],
-                                   temperature=temperature if temperature is not None else 1.0,
-                                   sample=True,
-                                   top_k=top_k if top_k is not None else min(100,self.transformer.config.vocab_size),
-                                   callback=callback if callback is not None else lambda k: None)
-        x_sample_nopix = self.decode_to_img(index_sample, quant_z.shape)
-
-        # det sample
-        z_start_indices = z_indices[:, :0]
-        index_sample = self.sample(z_start_indices, c_indices,
-                                   steps=z_indices.shape[1],
-                                   sample=False,
-                                   callback=callback if callback is not None else lambda k: None)
-        x_sample_det = self.decode_to_img(index_sample, quant_z.shape)
-
-        # reconstruction
-        x_rec = self.decode_to_img(z_indices, quant_z.shape)
-
-        log["inputs"] = x
-        log["reconstructions"] = x_rec
-
-        if self.cond_stage_key in ["objects_bbox", "objects_center_points"]:
-            figure_size = (x_rec.shape[2], x_rec.shape[3])
-            dataset = kwargs["pl_module"].trainer.datamodule.datasets["validation"]
-            label_for_category_no = dataset.get_textual_label_for_category_no
-            plotter = dataset.conditional_builders[self.cond_stage_key].plot
-            log["conditioning"] = torch.zeros_like(log["reconstructions"])
-            for i in range(quant_c.shape[0]):
-                log["conditioning"][i] = plotter(quant_c[i], label_for_category_no, figure_size)
-            log["conditioning_rec"] = log["conditioning"]
-        elif self.cond_stage_key != "image":
-            cond_rec = self.cond_stage_model.decode(quant_c)
-            if self.cond_stage_key == "segmentation":
-                # get image from segmentation mask
-                num_classes = cond_rec.shape[1]
-
-                c = torch.argmax(c, dim=1, keepdim=True)
-                c = F.one_hot(c, num_classes=num_classes)
-                c = c.squeeze(1).permute(0, 3, 1, 2).float()
-                c = self.cond_stage_model.to_rgb(c)
-
-                cond_rec = torch.argmax(cond_rec, dim=1, keepdim=True)
-                cond_rec = F.one_hot(cond_rec, num_classes=num_classes)
-                cond_rec = cond_rec.squeeze(1).permute(0, 3, 1, 2).float()
-                cond_rec = self.cond_stage_model.to_rgb(cond_rec)
-            log["conditioning_rec"] = cond_rec
-            log["conditioning"] = c
-
-        log["samples_half"] = x_sample
-        log["samples_nopix"] = x_sample_nopix
-        log["samples_det"] = x_sample_det
-        return log
+        return NotImplementedError
 
     def get_input(self, key, batch):
         x = batch[key]
@@ -288,14 +209,68 @@ class Net2NetS4(pl.LightningModule):
         self.log("val/loss", loss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
         return loss
 
+    #Copied from Kim's repo, working version (the one he sent later)
     def configure_optimizers(self):
-        """
+        weight_decay = 0.01
+        patience = 10
+        #opt = torch.optim.Adam(self.s4_model.parameters(), lr=lr, betas=(0.5, 0.9))
+        #return opt
+
+        decay = set()
+        no_decay = set()
+        whitelist_weight_modules = (torch.nn.Linear, )
+        blacklist_weight_modules = (torch.nn.LayerNorm, torch.nn.Embedding)
+
+        for mn, m in self.s4_model.named_modules():
+            for pn, p in m.named_parameters():
+                fpn = '%s.%s' % (mn, pn) if mn else pn # full param name
+                
+                if hasattr(p, "_optim"):
+                    no_decay.add(fpn)
+                else:
+                    if pn.endswith('bias'):
+                        # all biases will not be decayed
+                        no_decay.add(fpn)
+                    elif pn.endswith('weight') and isinstance(m, whitelist_weight_modules):
+                        # weights of whitelist modules will be weight decayed
+                        decay.add(fpn)
+                    elif pn.endswith('weight') and isinstance(m, blacklist_weight_modules):
+                        # weights of blacklist modules will NOT be weight decayed
+                        no_decay.add(fpn)
+                    else:
+                        if pn[-1] == "C" or pn[-1] == "D":
+                            decay.add(fpn)
+                        #for mn2, m2 in m.named_modules():
+                        #    print(mn2, m2)
+                        #print("missing", fpn, m.__class__.__name__)
+        # special case the position embedding parameter in the root GPT module as not decayed
+        #no_decay.add('pos_emb')
+
+        # validate that we considered every parameter
+        param_dict = {pn: p for pn, p in self.s4_model.named_parameters()}
+        inter_params = decay & no_decay
+        union_params = decay | no_decay
+        assert len(inter_params) == 0, "parameters %s made it into both decay/no_decay sets!" % (str(inter_params), )
+        assert len(param_dict.keys() - union_params) == 0, "parameters %s were not separated into either decay/no_decay set!" \
+                                                    % (str(param_dict.keys() - union_params), )
+
+        # create the pytorch optimizer object
+        optim_groups = [
+            {"params": [param_dict[pn] for pn in sorted(list(decay))], "weight_decay": 0.01},
+            {"params": [param_dict[pn] for pn in sorted(list(no_decay))], "weight_decay": 0.0},
+        ]
+        optimizer = torch.optim.AdamW(optim_groups, lr=self.learning_rate, betas=(0.9, 0.95))
+        return optimizer
+
+    """
+    def configure_optimizers(self):
+       " 
         Following minGPT:
         This long function is unfortunately doing something very simple and is being very defensive:
         We are separating out all parameters of the model into two buckets: those that will experience
         weight decay for regularization and those that won't (biases, and layernorm/embedding weights).
         We are then returning the PyTorch optimizer object.
-        """
+       " 
         # separate out all parameters to those that will and won't experience regularizing weight decay
         decay = set()
         no_decay = set()
@@ -337,6 +312,7 @@ class Net2NetS4(pl.LightningModule):
         ]
         optimizer = torch.optim.AdamW(optim_groups, lr=self.learning_rate, betas=(0.9, 0.95))
         return optimizer
+    """
 
 class RVQS4 (Net2NetS4):
     def __init__(self,
@@ -375,8 +351,8 @@ class RVQS4 (Net2NetS4):
         self.end_to_end_sampling = end_to_end_sampling
         self.input_1d = input_1d
 
-        #if input_1d:
-        #    self.s4_config.params.
+        if input_1d:
+            s4_config.params.inp_dim = 1
 
         if joint_training:
             #self.z_codebook_level is altered in each train loop in joint_training mode, starts with 0
@@ -402,7 +378,7 @@ class RVQS4 (Net2NetS4):
 
         self.sos_token=sos_token
 
-        self.sos_emb = nn.Parameter(torch.rand(1,1,s4_config.params.inp_dim))
+        #self.sos_emb = nn.Parameter(torch.rand(1,1,s4_config.params.inp_dim))
         self.uncond_emb = nn.Parameter(torch.zeros(1,1,s4_config.params.inp_dim))
 
         #print('self.device=',self.device)
@@ -418,6 +394,12 @@ class RVQS4 (Net2NetS4):
         res = self.first_stage_config.params.ddconfig.resolution
         assert res%down_f==0
         return res//down_f
+
+    #Shape of cb_index is (bs,1), output shape is bchw
+    def get_codebook_entry_one_batch(self,cb_index,cb_level):
+        cb_dim = self.first_stage_config.params.embed_dim
+        bhwc=(cb_index.shape[0],1,1,cb_dim)
+        return self.first_stage_model.quantizers[cb_level].get_codebook_entry(cb_index,shape=bhwc)
 
     def decode_to_img(self, index, zshape):
         index = self.permuter(index, reverse=True)
@@ -535,17 +517,23 @@ class RVQS4 (Net2NetS4):
         #print('forward, x.shape:',x.shape)
         #print('forward, c.shape:',c.shape)
         z_quant, z_indices, _ = self.encode_to_z(x)
-        #c_quant, c_indices, _ = self.encode_to_c(c)
 
-        #TODO: Adapt joint training for unequal level sizes
-        if self.joint_training:
-            zlevel=self.z_codebook_level
+        debug=True
+        if debug:
+            c_quant = z_quant[:,:0,:]
+            c_indices = z_quant[:,:0]
         else:
-            zlevel=None
+            c_quant, c_indices, _ = self.encode_to_c(c)
 
-        #cz_quants = torch.cat((c_quant, z_quant), dim=1)
 
-        cz_quants = z_quant
+
+        if c_quant.shape[1]==0:
+            sos_quant = self.get_codebook_entry_one_batch(torch.ones_like(z_indices)[:,0]*self.sos_token,cb_level=self.z_codebook_level)
+            sos_quant = einops.rearrange(sos_quant, 'b c h w -> b (h w) c')
+
+            cz_quants = torch.cat((sos_quant, z_quant), dim=1)
+        else:
+            cz_quants = torch.cat((c_quant, z_quant), dim=1)
 
         target = z_indices
         #print('target.shape: ',target.shape)
@@ -553,10 +541,17 @@ class RVQS4 (Net2NetS4):
 
         #logits, _ = self.s4_model(cz_quants[:,:-1,:])
         logits, _ = self.s4_model(cz_quants)
+        
         #print('logits.shape: ',logits.shape)
 
-        # cut off conditioning outputs - output i corresponds to p(z_i | z_{<i}, c)
-        #logits = logits[:, c_quant.shape[1]-1:]
+        # cut off conditioning outputs
+        #TODO: Think about if conditioned case needs SOS token as well
+        #TODO: Check how S4 is handling the logits/input shift in CNN mode, is first logit corresponding to prediction of first token or of second token?
+        #Here: Suppose that the shift is already taken care of, so first logit corresponds to SOS token
+        if c_quant.shape[1]>0:
+            logits = logits[:, c_quant.shape[1]:]
+        else:
+            logits = logits[:, 1:]
 
         #print('logits.shape: ',logits.shape)
 
@@ -601,6 +596,9 @@ class RVQS4 (Net2NetS4):
     @torch.no_grad()
     def log_images_one_lvl(self, batch, return_quantized_sample=False, temperature=None, top_k=None, callback=None, lr_interface=False, **kwargs):
 
+
+        sample_debug=True
+
         #print('=====log_images called=====')
         log = dict()
 
@@ -611,27 +609,67 @@ class RVQS4 (Net2NetS4):
         x = x.to(device=self.device)
         c = c.to(device=self.device)
 
+        #quant_z has shape b (h w) c
         quant_z, z_indices, z_bchw = self.encode_to_z(x)
         quant_c, c_indices, c_bchw = self.encode_to_c(c)
 
-        #TODO: Adapt half picture sampling to work with CodeGPT
-        create_half_sample=False
-        if create_half_sample:
-            #print('Creating half sample=========')
-            # create a "half"" sample
-            z_start_indices = z_indices[:,:z_indices.shape[1]//2]
-            #print('z_start_indices: ', z_start_indices)
 
-            index_sample = self.sample(z_start_indices, c_indices,
-                                       steps=z_indices.shape[1]-z_start_indices.shape[1],
+        log_prediction=True
+
+        if log_prediction and self.z_codebook_level==0:
+            logits, _ = self.forward(x,c) # (B,L,C)
+            logits = einops.rearrange(logits, 'b l c -> (b l) c')
+            # Output distribution
+            probs = F.softmax(logits, dim=-1)
+
+            # Optional: scale by temperature
+            if temperature is not None:
+                logits = logits / temperature
+            
+            # Optional: top_k sampling
+            if top_k is not None:
+                v, ix = torch.topk(probs, top_k)
+                logits[logits < v[..., [-1]]] = -1e20
+
+            # Sample from the distribution
+            logits = torch.distributions.Categorical(logits=logits).sample()
+            
+            predictions = self.decode_to_img(logits, z_bchw)
+            log['predictions'] = predictions
+
+
+        #TODO: Adapt half picture sampling to work with CodeGPT
+        cond_perc_list=[0.2,0.5,0.8]
+        cond_perc_outputs=[]
+        for cond_on_first_x_percent in cond_perc_list:
+            sos_index=torch.ones_like(z_indices)[:,:1]*self.sos_token
+            z_start_indices = z_indices[:,:round(quant_z.shape[1]*cond_on_first_x_percent)]
+            z_start_indices = torch.cat([sos_index,z_start_indices],dim=1)
+
+            n_tokens_to_sample = z_indices.shape[1] + 1 - z_start_indices.shape[1]
+
+            index_sample = self.sample_s4(z_start_indices, quant_c,
+                                       steps=n_tokens_to_sample,
                                        temperature=temperature if temperature is not None else 1.0,
                                        sample=True,
                                        top_k=top_k if top_k is not None else min(100,self.s4_config.params.codebook_size),
                                        callback=callback if callback is not None else lambda k: None)
 
-            #print('index_sample: ', index_sample)
-            x_sample = self.decode_to_img(index_sample, z_bchw)
-            #print('Half sample created==========')
+            #cut off SOS token
+            index_sample = index_sample[:,1:]
+            #print('Sampling with start indices, index_sample.shape:',index_sample.shape)
+
+            if self.be_unconditional:
+                if sample_debug:
+                    cond_perc_outputs.append(self.decode_to_img(index_sample, z_bchw))
+                else:
+                    #dummy_c = torch.zeros(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
+                    dummy_c = self.uncond_emb.expand(z_bchw[0],z_bchw[2]*z_bchw[3],-1)
+                    x_sample_nopix_sum = self.cond_and_pred_to_img(dummy_c, index_sample, z_bchw)
+            else:
+                x_sample_nopix_sum = self.cond_and_pred_to_img(quant_c, index_sample, z_bchw)
+
+
 
         #print('------------Sampling-------------')
         #print('quant_z.shape:,', quant_z.shape)
@@ -639,25 +677,34 @@ class RVQS4 (Net2NetS4):
 
         #print('===========normal sampling==========\n')
         #z_start_quants=quant_z[:, :0, :]
-        z_start_quants=self.sos_emb.expand(z_bchw[0],-1,-1,-1)
-        sample_steps = quant_z.shape[1]
+        sos_index=torch.ones_like(z_indices)[:,:1]*self.sos_token
+        z_start_indices = sos_index
+        n_tokens_to_sample = z_indices.shape[1]
 
         #print('z_start_quants.shape:',z_start_quants.shape)
-        index_sample = self.sample_s4(z_start_quants, quant_c,
-                                   steps=sample_steps,
+        index_sample = self.sample_s4(z_start_indices, quant_c,
+                                   steps=n_tokens_to_sample,
                                    temperature=temperature if temperature is not None else 1.0,
                                    sample=True,
                                    top_k=top_k if top_k is not None else min(100,self.s4_config.params.codebook_size),
                                    callback=callback if callback is not None else lambda k: None)
 
 
-        plt.hist(index_sample.cpu(),bins=2048)
-        plt.savefig("/export/home/fmayer/taming-transformers/logs/2022-06-24T14-29-25_s4_faces_state_dim_16384/hist.png",dpi=2000)
+        #print('Normal sampling, index_sample.shape:',index_sample.shape)
+
+        #cut off SOS token
+        index_sample = index_sample[:,1:]
+
+        #plt.hist(index_sample.cpu(),bins=2048)
+        #plt.savefig("/export/home/fmayer/taming-transformers/logs/cb_histograms/",dpi=2000)
 
         if self.be_unconditional:
-            #dummy_c = torch.zeros(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
-            dummy_c = self.uncond_emb.expand(z_bchw[0],z_bchw[2]*z_bchw[3],-1)
-            x_sample_nopix_sum = self.cond_and_pred_to_img(dummy_c, index_sample, z_bchw)
+            if sample_debug:
+                x_sample_nopix_sum = self.decode_to_img(index_sample, z_bchw)
+            else:
+                #dummy_c = torch.zeros(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
+                dummy_c = self.uncond_emb.expand(z_bchw[0],z_bchw[2]*z_bchw[3],-1)
+                x_sample_nopix_sum = self.cond_and_pred_to_img(dummy_c, index_sample, z_bchw)
         else:
             x_sample_nopix_sum = self.cond_and_pred_to_img(quant_c, index_sample, z_bchw)
 
@@ -691,6 +738,9 @@ class RVQS4 (Net2NetS4):
         else:
             log["samples_nopix_lvl{}".format(self.z_codebook_level)] = x_sample_nopix_sum
             #log["samples_det_sum_cond"] = x_sample_det_sum
+
+        for i in range(len(cond_perc_list)):
+            log["sample_{}_perc_given_lvl{}".format(round(cond_perc_list[i]*100),self.z_codebook_level)] = cond_perc_outputs[i]
 
         if return_quantized_sample:
             quant_sample = self.quant_c_and_ind_to_next_cblvl(quant_c, index_sample, z_bchw)
@@ -814,44 +864,55 @@ class RVQS4 (Net2NetS4):
 
             return logs
 
-    def sample_s4(self, x, c, steps, temperature=1.0, sample=False, top_k=None,
+    def sample_s4(self, x_start_indices, c, steps, temperature=1., sample=True, top_k=None,
                callback=lambda k: None):
 
+        #temperature=100.
+        #top_k=1000
         #print('sample_s4========================================')
         #print('steps:',steps)
-        #print('x.shape:',x.shape)
         #print('c.shape:',c.shape)
-        #print('cross_attention:',self.transformer.cross_attention)
 
+        #print('x_start_indices.shape:',x_start_indices.shape)
+        assert x_start_indices.shape[1]>0
         assert torch.isnan(c).sum()==0
-        assert torch.isnan(x).sum()==0
+        assert torch.isnan(x_start_indices).sum()==0
 
         #x = torch.cat((c,x),dim=1)
 
         #state shape: (bs,tok_emb_dim,state_dim)
         #state = torch.rand((x.shape[0],self.s4_config.params.tok_emb_dim,self.s4_config.params.state_dim),device=x.device, dtype=x.dtype)
 
-        state = self.s4_model.default_state(x.shape[0])
+        state = self.s4_model.default_state(x_start_indices.shape[0])
 
-        if self.joint_training:
-            zlevel=self.z_codebook_level
-        else:
-            zlevel=None
-
-        x_indices = torch.zeros((x.shape[0],0),device=x.device,dtype=torch.long)
+        #x_indices = torch.zeros((x.shape[0],0),device=x.device,dtype=torch.long)
 
         self.s4_model.setup_step()
 
-        x=x[:,0,0,:]
+
+        #Let the model see all the start indices to get to the right state, the logit outputs are not used
+        for k in range(x_start_indices.shape[1]):
+            ix = x_start_indices[:,k]
+
+            #bhwc=(z_bchw[0],z_bchw[2],z_bchw[3],z_bchw[1])
+            ix_quant = self.get_codebook_entry_one_batch(cb_index=ix,cb_level=self.z_codebook_level)
+            #ix_quant = self.first_stage_model.quantizers[self.z_codebook_level].get_codebook_entry(ix,shape=bhwc)
+            ix_quant=einops.rearrange(ix_quant, 'b c h w  -> b (h w) c')
+
+            x = ix_quant[:,0,:]
+
+            logits, state = self.s4_model.step(x, state)
+
+
+        #Starting from the state that contains the start indices, sample the rest of the image
+        x_indices = x_start_indices
         for k in range(steps):
             assert torch.isnan(x).sum()==0
             callback(k)
 
-            #print('Step, x.shape:',x.shape)
-            #print('Step, state.shape:',state.shape)
-            logits, state = self.s4_model.step(x, state)
-
-            #print('logits.shape:',logits.shape)
+            #For the first step, use the last logit output of the previous loop
+            if k>0:
+                logits, state = self.s4_model.step(x, state)
 
             # pluck the logits at the final step and scale by temperature
             logits = logits / temperature
@@ -861,6 +922,11 @@ class RVQS4 (Net2NetS4):
             # apply softmax to convert to probabilities
             probs = F.softmax(logits, dim=-1)
 
+            if k==0:
+                plt.figure(2)
+                #plt.hist(probs.flatten().cpu(),bins=10)
+                #plt.savefig("/export/home/fmayer/taming-transformers/logs/cb_histograms/probs.png")
+
             # sample from the distribution or take the most likely
             if sample:
                 ix = torch.multinomial(probs, num_samples=1)
@@ -868,8 +934,9 @@ class RVQS4 (Net2NetS4):
                 _, ix = torch.topk(probs, k=1, dim=-1)
 
             x_indices=torch.cat((x_indices,ix), dim=1)
-            bhwc=(ix.shape[0],1,1,x.shape[1])
-            ix_quant = self.first_stage_model.quantizers[self.z_codebook_level].get_codebook_entry(ix,shape=bhwc)
+            #bhwc=(ix.shape[0],1,1,x.shape[1])
+            ix_quant = self.get_codebook_entry_one_batch(cb_index=ix,cb_level=self.z_codebook_level)
+            #ix_quant = self.first_stage_model.quantizers[self.z_codebook_level].get_codebook_entry(ix,shape=bhwc)
             ix_quant=einops.rearrange(ix_quant, 'b c h w  -> b (h w) c')
 
             #x = torch.cat((x, ix_quant), dim=1)

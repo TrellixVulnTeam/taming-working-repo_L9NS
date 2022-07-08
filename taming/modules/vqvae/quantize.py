@@ -89,6 +89,7 @@ class VectorQuantizer(nn.Module):
 
         return z_q, loss, (perplexity, min_encodings, min_encoding_indices)
 
+    #Returns quantized vectors in shape (b,c,h,w)
     def get_codebook_entry(self, indices, shape):
         # shape specifying (batch, height, width, channel)
         # TODO: check for more easy handling with nn.Embedding

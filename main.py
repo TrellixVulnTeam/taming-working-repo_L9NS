@@ -208,12 +208,19 @@ class SetupCallback(Callback):
             os.makedirs(self.cfgdir, exist_ok=True)
 
             print("Project config")
-            print(self.config.pretty())
+            try:
+                print(self.config.pretty())
+            except:
+                print("Function self.config.pretty() not found")
+
             OmegaConf.save(self.config,
                            os.path.join(self.cfgdir, "{}-project.yaml".format(self.now)))
 
             print("Lightning config")
-            print(self.lightning_config.pretty())
+            try:
+                print(self.lightning_config.pretty())
+            except:
+                print("Function self.lightning_config.pretty() not found")
             OmegaConf.save(OmegaConf.create({"lightning": self.lightning_config}),
                            os.path.join(self.cfgdir, "{}-lightning.yaml".format(self.now)))
 
@@ -480,7 +487,11 @@ if __name__ == "__main__":
             },
         }
         default_logger_cfg = default_logger_cfgs["testtube"]
-        logger_cfg = lightning_config.logger or OmegaConf.create()
+        try:
+            logger_cfg = lightning_config.logger or OmegaConf.create()
+        except:
+            logger_cfg = OmegaConf.create()
+
         logger_cfg = OmegaConf.merge(default_logger_cfg, logger_cfg)
         trainer_kwargs["logger"] = instantiate_from_config(logger_cfg)
 
@@ -524,7 +535,7 @@ if __name__ == "__main__":
                     "batch_frequency": opt.batch_frequency,
                     "max_images": 4,
                     "clamp": True,
-                    "log_every_n_epochs": opt.log_every_n_epochs
+                    #"log_every_n_epochs": opt.log_every_n_epochs
                 }
             },
             "learning_rate_logger": {
@@ -555,7 +566,12 @@ if __name__ == "__main__":
             ngpu = len(lightning_config.trainer.gpus.strip(",").split(','))
         else:
             ngpu = 1
-        accumulate_grad_batches = lightning_config.trainer.accumulate_grad_batches or 1
+
+        try:
+            accumulate_grad_batches = lightning_config.trainer.accumulate_grad_batches or 1
+        except:
+            accumulate_grad_batches = 1
+
         print(f"accumulate_grad_batches = {accumulate_grad_batches}")
         lightning_config.trainer.accumulate_grad_batches = accumulate_grad_batches
         model.learning_rate = accumulate_grad_batches * ngpu * bs * base_lr

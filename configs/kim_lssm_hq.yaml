@@ -1,0 +1,63 @@
+model:
+  base_learning_rate: 4.5e-06
+  target: kim_src.models.lssm.LatentSSM
+  params:
+    first_stage_config:
+      target: kim_src.models.autoencoders.VQModel
+      params:
+        ckpt_path: "/export/compvis-nfs/user/ksimmote/logs/f4-z3-n256/checkpoints/0001.ckpt"
+        embed_dim: 3
+        n_embed: 256
+        ddconfig:
+          double_z: false
+          z_channels: 3
+          resolution: 256
+          in_channels: 3
+          out_ch: 3
+          ch: 128
+          ch_mult: [1,2,4]
+          num_res_blocks: 2
+          attn_resolutions: [16]
+          dropout: 0.0
+        lossconfig:
+          target: kim_src.modules.losses.contperceptual.DummyLoss
+    cond_stage_config: __is_unconditional__
+    second_stage_config:
+      target: kim_src.modules.state_spaces.models.ARS4
+      params:
+        vocab_size: 256
+        embed_dim: 512
+        n_layers: 12
+        l_max: 1
+
+data:
+  target: kim_src.data.utils.DataModuleFromConfig
+  params:
+    batch_size: 6
+    num_workers: 6
+    train:
+      target: kim_src.data.faceshq.FFHQTrain
+      params:
+        size: 256
+    validation:
+      target: kim_src.data.faceshq.FFHQValidation
+      params:
+        size: 256
+
+lightning:
+  callbacks:
+    image_logger:
+      target: kim_utils.ImageLogger
+      params:
+        batch_frequency: 100
+        max_images: 4
+        log_on_batch_idx: True
+        log_first_step: True
+
+  modelcheckpoint:
+    params:
+      every_n_train_steps: 2000
+
+  trainer:
+    benchmark: True
+    num_sanity_val_steps: 0
