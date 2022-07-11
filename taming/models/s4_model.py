@@ -331,7 +331,7 @@ class RVQS4 (Net2NetS4):
                  z_codebook_level=0,
                  joint_training=False,
                  end_to_end_sampling=False,
-                 input_1d=False
+                 res_levels_flattened=False
                  ):
 
         #Adjust vocab size of transformer to that of the chosen codebook level
@@ -349,10 +349,8 @@ class RVQS4 (Net2NetS4):
 
         self.joint_training = joint_training
         self.end_to_end_sampling = end_to_end_sampling
-        self.input_1d = input_1d
 
-        if input_1d:
-            s4_config.params.inp_dim = 1
+        self.res_levels_flattened = res_levels_flattened
 
         if joint_training:
             #self.z_codebook_level is altered in each train loop in joint_training mode, starts with 0
@@ -435,19 +433,11 @@ class RVQS4 (Net2NetS4):
 
     @torch.no_grad()
     def encode_to_z(self, x, codebook_level=None):
-        #print('------------------------encode_to_z called-------------------------------')
-        #print('x.shape:',x.shape)
         if codebook_level is None:
             codebook_level=self.z_codebook_level
 
-        #print(self.z_codebook_level)
-        #print(self.first_stage_model.quantizers[self.z_codebook_level])
         pre_quant = self.first_stage_model.encode_to_prequant(x)
-        #print('pre_quant.shape:',pre_quant.shape)
         all_quantized, all_indices, all_losses = self.first_stage_model.make_quantizations(pre_quant)
-        #print(len(all_indices),all_indices[0].shape)
-        #print(len(all_quantized),all_quantized[0].shape)
-        #print('-------------------------------------------------------')
         if codebook_level>0:
             quant_z = all_quantized[codebook_level] - all_quantized[codebook_level-1]
 
@@ -457,10 +447,7 @@ class RVQS4 (Net2NetS4):
         indices=all_indices[codebook_level]
         indices = indices.view(quant_z.shape[0], -1) 
 
-        #quant_z, _, info = self.first_stage_model.encode(x)
-        #indices = info[2].view(quant_z.shape[0], -1) #info[2]=min_encoding_indices (indices of closest embedding in codebook)
         indices = self.permuter(indices)
-        #print('encode_to_z done')
         bchw = quant_z.shape
         quant_z = einops.rearrange(quant_z, 'b c h w -> b (h w) c')
 
@@ -479,8 +466,6 @@ class RVQS4 (Net2NetS4):
 
             #Condition on image made up of trainable 'no input embedding' vectors for unconditional case
             quant_c = self.uncond_emb.expand(bs,hidden_dim**2,-1)
-            #quant_c = torch.ones(*bchw,device=c.device) * self.sos_token
-            #quant_c = einops.rearrange(quant_c, 'b c h w -> b (h w) c')
             indices = None
 
         else:
@@ -490,8 +475,6 @@ class RVQS4 (Net2NetS4):
             #The quantizations in all_quantized are already cumulative over the codebook levels
             quant_c = all_quantized[codebook_level]
 
-            #print('quant_c.shape:',quant_c.shape)
-            #print('all_indices len: ',len(all_indices))
             indices=all_indices[codebook_level]
             indices = einops.rearrange(indices, '(b hw) -> b hw', b=quant_c.shape[0]) 
 
@@ -499,6 +482,56 @@ class RVQS4 (Net2NetS4):
             quant_c = einops.rearrange(quant_c, 'b c h w -> b (h w) c')
 
         return quant_c, indices, bchw
+
+    @torch.no_grad()
+    def encode_to_z_levels_flattened(self, x):
+
+        pre_quant = self.first_stage_model.encode_to_prequant(x)
+        all_quantized, all_indices, _ = self.first_stage_model.make_quantizations(pre_quant)
+        print('len(all_quantized):', len(all_quantized))
+        print('all_quantized[0].shape:', all_quantized[0].shape)
+        print('all_indices[0].shape:', all_indices[0].shape)
+
+        all_quantized = torch.stack(all_quantized, dim=-1)
+
+        indices = indices.view(quant_z.shape[0], -1, -1) 
+
+        indices = self.permuter(indices)
+        bchw = quant_z.shape
+        quant_z = einops.rearrange(quant_z, 'b c h w -> b (h w) c')
+
+            
+        return quant_z, indices, bchw
+
+    @torch.no_grad()
+    def encode_to_c_levels_flattened(self, c):
+        if codebook_level is None:
+            codebook_level=self.c_codebook_level
+
+        if self.be_unconditional:
+            hidden_dim=self.get_hidden_dim()
+            bs=c.shape[0]
+            bchw=(bs,self.first_stage_config.params.embed_dim,hidden_dim,hidden_dim)
+
+            #Condition on image made up of trainable 'no input embedding' vectors for unconditional case
+            quant_c = self.uncond_emb.expand(bs,hidden_dim**2,-1)
+            indices = None
+
+        else:
+            pre_quant = self.cond_stage_model.encode_to_prequant(c)
+            all_quantized, all_indices, all_losses = self.cond_stage_model.make_quantizations(pre_quant)
+
+            #The quantizations in all_quantized are already cumulative over the codebook levels
+            quant_c = all_quantized[codebook_level]
+
+            indices=all_indices[codebook_level]
+            indices = einops.rearrange(indices, '(b hw) -> b hw', b=quant_c.shape[0]) 
+
+            bchw = quant_c.shape
+            quant_c = einops.rearrange(quant_c, 'b c h w -> b (h w) c')
+
+        return quant_c, indices, bchw
+
 
     def init_cond_stage_from_ckpt(self, config):
         if self.z_codebook_level==0:
@@ -511,9 +544,55 @@ class RVQS4 (Net2NetS4):
         self.cond_stage_model = self.first_stage_model
         self.cond_stage_key = self.first_stage_key
 
+    def forward_levels_flattened(self, x, c):
+
+        z_quant, z_indices, _ = self.encode_to_z_levels_flattened(x)
+
+        debug=True
+        if debug:
+            c_quant = z_quant[:,:0,:]
+            c_indices = z_quant[:,:0]
+        else:
+            c_quant, c_indices, _ = self.encode_to_c_levels_flattened(c)
+
+
+
+        if c_quant.shape[1]==0:
+            sos_quant = self.get_codebook_entry_one_batch(torch.ones_like(z_indices)[:,0]*self.sos_token,cb_level=self.z_codebook_level)
+            sos_quant = einops.rearrange(sos_quant, 'b c h w -> b (h w) c')
+
+            cz_quants = torch.cat((sos_quant, z_quant), dim=1)
+        else:
+            cz_quants = torch.cat((c_quant, z_quant), dim=1)
+
+        target = z_indices
+        #print('target.shape: ',target.shape)
+        #print('cz_quants.shape:', cz_quants.shape)
+
+        logits, _ = self.s4_model(cz_quants[:,:-1,:])
+        #logits, _ = self.s4_model(cz_quants)
+        
+        #print('logits.shape: ',logits.shape)
+
+        # cut off conditioning outputs
+        #TODO: Think about if conditioned case needs SOS token as well
+        #TODO: Check how S4 is handling the logits/input shift in CNN mode, is first logit corresponding to prediction of first token or of second token?
+        #Here: Suppose that the shift is already taken care of, so first logit corresponds to SOS token
+        if c_quant.shape[1]>0:
+            logits = logits[:, c_quant.shape[1]-1:]
+        #else:
+            #logits = logits[:, 1:]
+        #    logits = logits[:, :-1]
+
+        #print('logits.shape: ',logits.shape)
+
+
+        return logits, target
             
     # one step to produce the logits
     def forward(self, x, c):
+        if self.res_levels_flattened:
+            return forward_levels_flattened(x,c)
         #print('forward, x.shape:',x.shape)
         #print('forward, c.shape:',c.shape)
         z_quant, z_indices, _ = self.encode_to_z(x)
@@ -539,8 +618,8 @@ class RVQS4 (Net2NetS4):
         #print('target.shape: ',target.shape)
         #print('cz_quants.shape:', cz_quants.shape)
 
-        #logits, _ = self.s4_model(cz_quants[:,:-1,:])
-        logits, _ = self.s4_model(cz_quants)
+        logits, _ = self.s4_model(cz_quants[:,:-1,:])
+        #logits, _ = self.s4_model(cz_quants)
         
         #print('logits.shape: ',logits.shape)
 
@@ -549,9 +628,10 @@ class RVQS4 (Net2NetS4):
         #TODO: Check how S4 is handling the logits/input shift in CNN mode, is first logit corresponding to prediction of first token or of second token?
         #Here: Suppose that the shift is already taken care of, so first logit corresponds to SOS token
         if c_quant.shape[1]>0:
-            logits = logits[:, c_quant.shape[1]:]
-        else:
-            logits = logits[:, 1:]
+            logits = logits[:, c_quant.shape[1]-1:]
+        #else:
+            #logits = logits[:, 1:]
+        #    logits = logits[:, :-1]
 
         #print('logits.shape: ',logits.shape)
 
