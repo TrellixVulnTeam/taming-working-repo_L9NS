@@ -3,9 +3,9 @@ model:
   target: taming.models.s4_model.RVQS4
   params:
     z_codebook_level: 0
-    unconditional: False
-    joint_training: True
-    end_to_end_sampling: True
+    unconditional: True
+    joint_training: False
+    end_to_end_sampling: False
     res_levels_flattened: True
     sos_token: 0
     s4_config:

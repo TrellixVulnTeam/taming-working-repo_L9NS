@@ -400,11 +400,28 @@ class RVQS4 (Net2NetS4):
         return self.first_stage_model.quantizers[cb_level].get_codebook_entry(cb_index,shape=bhwc)
 
     def decode_to_img(self, index, zshape):
-        index = self.permuter(index, reverse=True)
         bhwc = (zshape[0],zshape[2],zshape[3],zshape[1])
         quant_z = self.first_stage_model.quantizers[self.z_codebook_level].get_codebook_entry(
             index.reshape(-1), shape=bhwc)
         x = self.first_stage_model.decode(quant_z)
+        return x
+
+    def decode_flat_levels_to_img(self, indices, dbchw):
+        #print('dbchw:',dbchw)
+        d = dbchw[0]
+        bhwc = (dbchw[1],dbchw[3],dbchw[4],dbchw[2])
+
+        quants=[]
+        indices = einops.rearrange(indices, 'b (d hw) -> d (b hw)', d=d, b=bhwc[0])
+        for lvl in range(d):
+            quants.append(self.first_stage_model.quantizers[lvl].get_codebook_entry(
+                indices[lvl,:], shape=bhwc))
+        #Stack to Tensor of shape (d, b, c, h, w)
+        quants = torch.stack(quants,dim=0) 
+        #Sum over the residual level dimension to obtain final quantized vectors
+        quant_sum = torch.sum(quants,dim=0,keepdim=False)
+
+        x = self.first_stage_model.decode(quant_sum)
         return x
 
     def quant_c_and_ind_to_next_cblvl(self, quant_c, pred_indices, target_shape_bchw):
@@ -488,49 +505,28 @@ class RVQS4 (Net2NetS4):
 
         pre_quant = self.first_stage_model.encode_to_prequant(x)
         all_quantized, all_indices, _ = self.first_stage_model.make_quantizations(pre_quant)
-        print('len(all_quantized):', len(all_quantized))
-        print('all_quantized[0].shape:', all_quantized[0].shape)
-        print('all_indices[0].shape:', all_indices[0].shape)
+        dbchw = all_quantized.shape
+        #print('encode,dbchw=',dbchw)
 
-        all_quantized = torch.stack(all_quantized, dim=-1)
+        quant_flattened = einops.rearrange(all_quantized, 'd b c h w -> b (d h w) c')
+        indices = torch.stack(all_indices,dim=0)
+        indices_flattened = einops.rearrange(indices, 'd (b hw) -> b (d hw)', b=dbchw[1])
+        #indices = indices.view(quant_z.shape[0], -1) 
 
-        indices = indices.view(quant_z.shape[0], -1, -1) 
-
-        indices = self.permuter(indices)
-        bchw = quant_z.shape
-        quant_z = einops.rearrange(quant_z, 'b c h w -> b (h w) c')
-
-            
-        return quant_z, indices, bchw
+        return quant_flattened, indices_flattened, dbchw
 
     @torch.no_grad()
     def encode_to_c_levels_flattened(self, c):
-        if codebook_level is None:
-            codebook_level=self.c_codebook_level
+        pre_quant = self.cond_stage_model.encode_to_prequant(c)
+        all_quantized, all_indices, all_losses = self.cond_stage_model.make_quantizations(pre_quant)
+        dbchw = all_quantized
 
-        if self.be_unconditional:
-            hidden_dim=self.get_hidden_dim()
-            bs=c.shape[0]
-            bchw=(bs,self.first_stage_config.params.embed_dim,hidden_dim,hidden_dim)
+        quant_flattened = einops.rearrange(all_quantized, 'd b c h w -> b (d h w) c')
+        indices = torch.stack(all_indices,dim=0)
+        indices_flattened = einops.rearrange(indices, 'd (b hw) -> b (d hw)', b=quant_flattened.shape[0])
 
-            #Condition on image made up of trainable 'no input embedding' vectors for unconditional case
-            quant_c = self.uncond_emb.expand(bs,hidden_dim**2,-1)
-            indices = None
+        return quant_flattened, indices_flattened, dbchw
 
-        else:
-            pre_quant = self.cond_stage_model.encode_to_prequant(c)
-            all_quantized, all_indices, all_losses = self.cond_stage_model.make_quantizations(pre_quant)
-
-            #The quantizations in all_quantized are already cumulative over the codebook levels
-            quant_c = all_quantized[codebook_level]
-
-            indices=all_indices[codebook_level]
-            indices = einops.rearrange(indices, '(b hw) -> b hw', b=quant_c.shape[0]) 
-
-            bchw = quant_c.shape
-            quant_c = einops.rearrange(quant_c, 'b c h w -> b (h w) c')
-
-        return quant_c, indices, bchw
 
 
     def init_cond_stage_from_ckpt(self, config):
@@ -592,7 +588,7 @@ class RVQS4 (Net2NetS4):
     # one step to produce the logits
     def forward(self, x, c):
         if self.res_levels_flattened:
-            return forward_levels_flattened(x,c)
+            return self.forward_levels_flattened(x,c)
         #print('forward, x.shape:',x.shape)
         #print('forward, c.shape:',c.shape)
         z_quant, z_indices, _ = self.encode_to_z(x)
@@ -689,16 +685,26 @@ class RVQS4 (Net2NetS4):
         x = x.to(device=self.device)
         c = c.to(device=self.device)
 
-        #quant_z has shape b (h w) c
-        quant_z, z_indices, z_bchw = self.encode_to_z(x)
-        quant_c, c_indices, c_bchw = self.encode_to_c(c)
+        if self.res_levels_flattened:
+            #quant_z has shape b (d h w) c
+            quant_z, z_indices, z_dbchw = self.encode_to_z_levels_flattened(x)
+
+            if sample_debug:
+                quant_c = quant_z[:,:0,:]
+                c_indices = quant_z[:,:0]
+            else:
+                quant_c, c_indices, c_dbchw = self.encode_to_c_levels_flattened(c)
+        else:
+            #quant_z has shape b (h w) c
+            quant_z, z_indices, z_bchw = self.encode_to_z(x)
+            quant_c, c_indices, c_bchw = self.encode_to_c(c)
 
 
         log_prediction=True
 
         if log_prediction and self.z_codebook_level==0:
             logits, _ = self.forward(x,c) # (B,L,C)
-            logits = einops.rearrange(logits, 'b l c -> (b l) c')
+            #logits = einops.rearrange(logits, 'b l c -> (b l) c')
             # Output distribution
             probs = F.softmax(logits, dim=-1)
 
@@ -712,14 +718,18 @@ class RVQS4 (Net2NetS4):
                 logits[logits < v[..., [-1]]] = -1e20
 
             # Sample from the distribution
-            logits = torch.distributions.Categorical(logits=logits).sample()
+            sample_indices = torch.distributions.Categorical(logits=logits).sample()
             
-            predictions = self.decode_to_img(logits, z_bchw)
+            if self.res_levels_flattened:
+                predictions = self.decode_flat_levels_to_img(sample_indices, z_dbchw)
+            else:
+                predictions = self.decode_to_img(sample_indices, z_bchw)
             log['predictions'] = predictions
 
 
         #TODO: Adapt half picture sampling to work with CodeGPT
-        cond_perc_list=[0.2,0.5,0.8]
+        #cond_perc_list=[0.2,0.5,0.8]
+        cond_perc_list=[]
         cond_perc_outputs=[]
         for cond_on_first_x_percent in cond_perc_list:
             sos_index=torch.ones_like(z_indices)[:,:1]*self.sos_token
@@ -741,7 +751,11 @@ class RVQS4 (Net2NetS4):
 
             if self.be_unconditional:
                 if sample_debug:
-                    cond_perc_outputs.append(self.decode_to_img(index_sample, z_bchw))
+                    if self.res_levels_flattened:
+                        predictions = self.decode_flat_levels_to_img(index_sample, z_dbchw)
+                    else:
+                        predictions = self.decode_to_img(index_sample, z_bchw)
+                    cond_perc_outputs.append(predictions)
                 else:
                     #dummy_c = torch.zeros(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
                     dummy_c = self.uncond_emb.expand(z_bchw[0],z_bchw[2]*z_bchw[3],-1)
@@ -780,7 +794,10 @@ class RVQS4 (Net2NetS4):
 
         if self.be_unconditional:
             if sample_debug:
-                x_sample_nopix_sum = self.decode_to_img(index_sample, z_bchw)
+                if self.res_levels_flattened:
+                    x_sample_nopix_sum = self.decode_flat_levels_to_img(index_sample, z_dbchw)
+                else:
+                    x_sample_nopix_sum = self.decode_to_img(index_sample, z_bchw)
             else:
                 #dummy_c = torch.zeros(z_bchw[0],z_bchw[2]*z_bchw[3],z_bchw[1],device=quant_c.device,dtype=quant_c.dtype)
                 dummy_c = self.uncond_emb.expand(z_bchw[0],z_bchw[2]*z_bchw[3],-1)
