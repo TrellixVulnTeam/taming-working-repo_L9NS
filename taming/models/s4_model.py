@@ -331,7 +331,8 @@ class RVQS4 (Net2NetS4):
                  z_codebook_level=0,
                  joint_training=False,
                  end_to_end_sampling=False,
-                 res_levels_flattened=False
+                 res_levels_flattened=False,
+                 monitor=monitor,
                  ):
 
         #Adjust vocab size of transformer to that of the chosen codebook level
@@ -351,6 +352,9 @@ class RVQS4 (Net2NetS4):
         self.end_to_end_sampling = end_to_end_sampling
 
         self.res_levels_flattened = res_levels_flattened
+
+        if monitor is not None:
+            self.monitor = monitor
 
         if joint_training:
             #self.z_codebook_level is altered in each train loop in joint_training mode, starts with 0
@@ -406,14 +410,16 @@ class RVQS4 (Net2NetS4):
         x = self.first_stage_model.decode(quant_z)
         return x
 
-    def decode_flat_levels_to_img(self, indices, dbchw):
+    def decode_flat_levels_to_img(self, indices, dbchw, cblvl=-1):
         #print('dbchw:',dbchw)
         d = dbchw[0]
         bhwc = (dbchw[1],dbchw[3],dbchw[4],dbchw[2])
+        if cblvl==-1:
+            cblvl=d-1
 
         quants=[]
         indices = einops.rearrange(indices, 'b (d hw) -> d (b hw)', d=d, b=bhwc[0])
-        for lvl in range(d):
+        for lvl in range(cblvl+1):
             quants.append(self.first_stage_model.quantizers[lvl].get_codebook_entry(
                 indices[lvl,:], shape=bhwc))
         #Stack to Tensor of shape (d, b, c, h, w)
@@ -795,7 +801,10 @@ class RVQS4 (Net2NetS4):
         if self.be_unconditional:
             if sample_debug:
                 if self.res_levels_flattened:
-                    x_sample_nopix_sum = self.decode_flat_levels_to_img(index_sample, z_dbchw)
+                    log_levels=[0,1,2,3]
+                    for lvl in log_levels:
+                        img_sample = self.decode_flat_levels_to_img(index_sample, z_dbchw, lvl)
+                        log["sample_end2end_lvl{}".format(lvl)] = img_sample
                 else:
                     x_sample_nopix_sum = self.decode_to_img(index_sample, z_bchw)
             else:
@@ -830,11 +839,12 @@ class RVQS4 (Net2NetS4):
         if not self.joint_training and self.z_codebook_level>0:
             log["reconstructions_cond_lvl_{}".format(self.c_codebook_level)] = log_resvq["reconstructions_{}".format(self.c_codebook_level)]
 
-        if self.z_codebook_level==0:
-            log["sample_end2end_lvl{}".format(self.z_codebook_level)] = x_sample_nopix_sum
-        else:
-            log["samples_nopix_lvl{}".format(self.z_codebook_level)] = x_sample_nopix_sum
-            #log["samples_det_sum_cond"] = x_sample_det_sum
+        if not self.res_levels_flattened:
+            if self.z_codebook_level==0: 
+                log["sample_end2end_lvl{}".format(self.z_codebook_level)] = x_sample_nopix_sum
+            else:
+                log["samples_nopix_lvl{}".format(self.z_codebook_level)] = x_sample_nopix_sum
+                #log["samples_det_sum_cond"] = x_sample_det_sum
 
         for i in range(len(cond_perc_list)):
             log["sample_{}_perc_given_lvl{}".format(round(cond_perc_list[i]*100),self.z_codebook_level)] = cond_perc_outputs[i]

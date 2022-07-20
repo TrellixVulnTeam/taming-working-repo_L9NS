@@ -1,5 +1,5 @@
 model:
-  base_learning_rate: 4.5e-6
+  base_learning_rate: 4.0e-5
   target: taming.models.vqgan.ResidualVQModel
   params:
     n_embed: 666 #dummy, unused
@@ -30,8 +30,8 @@ model:
         codebook_weight: 1.0
         n_classes: [2048,2048,2048,2048]
         use_actnorm: False
-        disc_start: 40001
-        disc_weight: 1.0
+        disc_start: 25001
+        disc_weight: 0.75
         disc_in_channels: 3
 
 data:

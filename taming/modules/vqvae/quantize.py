@@ -4,6 +4,11 @@ import torch.nn.functional as F
 import numpy as np
 from torch import einsum
 from einops import rearrange
+from pytorch_lightning.callbacks import Callback
+from pytorch_lightning.utilities.distributed import rank_zero_only
+from torch.utils.data import DataLoader, Subset
+from tqdm import tqdm
+from kim_utils import instantiate_from_config
 
 
 class VectorQuantizer(nn.Module):
@@ -460,3 +465,103 @@ class EMAVectorQuantizer(nn.Module):
         #z_q, 'b h w c -> b c h w'
         z_q = rearrange(z_q, 'b h w c -> b c h w')
         return z_q, loss, (perplexity, encodings, encoding_indices)
+
+
+class CodebookReviver(Callback):
+    # a pl callback called on every validation_epoch end or at a specified step interval
+    def __init__(self, vocab_size, dset_cfg, codebook_name="quantize", batch_size=64, num_data=10000,
+                 splits=5000, revive_threshold=0.0, step_freq=None, min_steps=0,num_workers=None):
+        super().__init__()
+        print(f"{self.__class__.__name__}: Initialization.")
+        self.vocab_size = vocab_size
+        self.revive_threshold = revive_threshold  # relative frequency of used indices. can for example be used to keep only indices that appear with a frequency of 0.1
+        self.dset_cfg = dset_cfg
+        self.codebook_name = codebook_name
+        self.batch_size = batch_size
+        self.num_data = num_data
+        self.split_computation = splits
+        self.step_freq = step_freq
+        self.num_workers = self.batch_size // 2 if num_workers is None else num_workers
+
+        if self.step_freq is not None:
+            self.min_steps = min_steps
+            self.executed_steps = list()
+        self.prepare()
+
+    @rank_zero_only
+    def prepare(self):
+        self.init_data(self.dset_cfg, self.batch_size, self.num_data)
+        self.prepared = True
+
+    @rank_zero_only
+    def init_data(self, dset_cfg, batch_size, num_images):
+        # make the dataset on which the codebook will be evaluated
+        dset = instantiate_from_config(dset_cfg)
+        self.data = dset.__class__.__name__
+        if num_images < len(dset):
+            print(f"{self.__class__.__name__}: Reducing the dataset to {num_images} randomly chosen images.")
+            subindices = np.random.choice(np.arange(len(dset)), replace=False, size=(num_images,))
+            dset = Subset(dset, subindices)
+        else:
+            print(f"{self.__class__.__name__}: num_images ({num_images}) > len(dataset) ({len(dset)}). "
+                  f"Using the whole dataset instead.")
+        self.n_data = len(dset)
+        self.dloader = DataLoader(dset, batch_size=batch_size, drop_last=False, num_workers=self.num_workers, )
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
+        if self.step_freq is not None:
+            if (pl_module.global_step % self.step_freq == 0) and \
+                    (pl_module.global_step >= self.min_steps) and \
+                    (pl_module.global_step not in self.executed_steps):
+                self.on_train_epoch_end(trainer, pl_module)
+                self.executed_steps.append(pl_module.global_step)
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        with torch.no_grad():
+            indices = self.get_revive_indices(pl_module)
+            assert hasattr(pl_module.second_stage, self.codebook_name)
+            self.revive(pl_module, indices, pl_module.device)
+
+    #@rank_zero_only
+    @torch.no_grad()
+    def revive(self, pl_module, indices, device):
+        codebook = getattr(pl_module.second_stage, self.codebook_name)
+        from sklearn.mixture import GaussianMixture
+        # indices to be revived
+        n_ind = indices.sum().item()
+        e_dim = codebook.embedding.weight.data.shape[1]
+
+        if n_ind > 0:
+            print(f"Found {n_ind} dead codebook entries. Trying to revive now.")
+            npcodebook = codebook.embedding.weight.data.cpu().numpy()
+
+            gaussian = GaussianMixture(n_components=1)  # TODO: or fit to encoded batch before quantization?
+            gaussian.fit(npcodebook)
+            revived = gaussian.sample(n_ind)[0]
+            npcodebook[indices] = revived
+            pl_module.second_stage.quantize.embedding.weight.data.copy_(torch.tensor(npcodebook).float().to(device))
+        else:
+            print(f"No dead codebook entries :)")
+
+    #@rank_zero_only
+    @torch.no_grad()
+    def get_revive_indices(self, pl_module):
+        predicted_indices = list()
+        for example in tqdm(self.dloader, desc="Revive: Scanning For Unused Entries"):
+            x = pl_module.get_input(example, pl_module.image_key).to(pl_module.device)
+            rec, _, _, _ = pl_module(x)
+            _, _, [_, _, ind] = pl_module.encode(x-rec)
+            predicted_indices.append(ind)
+        predicted_indices = torch.cat(predicted_indices, 0)
+        N = predicted_indices.shape.numel()
+        pred_ind_splits = torch.chunk(predicted_indices, self.split_computation, 0)
+
+        avg_probs = list()
+        for chunk_indices in tqdm(pred_ind_splits, desc="Splits"):
+            encodings = F.one_hot(chunk_indices, self.vocab_size).float().reshape(-1, self.vocab_size)
+            avg_probs.append(encodings.sum(0)[None, :].cpu())
+        avg_probs = torch.cat(avg_probs, 0)
+        avg_probs = avg_probs.sum(0) / N
+
+        indices = avg_probs <= self.revive_threshold
+        return indices

@@ -30,15 +30,15 @@ model:
         codebook_weight: 1.0
         n_classes: [2048,2048,2048,2048]
         use_actnorm: False
-        disc_start: 40001
-        disc_weight: 1.0
+        disc_start: 20001
+        disc_weight: 0.5
         disc_in_channels: 3
 
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 14
-    num_workers: 7
+    batch_size: 16
+    num_workers: 8
     train:
       target: taming.data.faceshq.FFHQTrain
       params:

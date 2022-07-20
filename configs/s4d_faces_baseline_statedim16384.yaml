@@ -1,0 +1,83 @@
+model:
+  base_learning_rate: 4.5e-06
+  target: taming.models.s4_model.RVQS4
+  params:
+    z_codebook_level: 0
+    unconditional: True
+    joint_training: False
+    end_to_end_sampling: False
+    res_levels_flattened: True
+    sos_token: 0
+    s4_config:
+      target: taming.modules.state_spaces.s4d.S4DList
+      params:
+        n_layers: 12
+        tok_emb_dim: 1024
+        state_dim: 1024
+        dropout: 0.0
+        #codebook_size: 16384
+        channels: 1 # maps 1-dim to C-dim
+        bidirectional: False
+    first_stage_config:
+      target: taming.models.vqgan.ResidualVQModel
+      params:
+        ckpt_path: "/export/home/fmayer/taming-transformers/logs/2022-05-20T14-06-09_ffhq_resvq_lee_baseline/checkpoints/epoch=000014.ckpt"
+        n_embed: 666
+        level_sizes:
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        layer_weights:
+        - 0.0
+        - 0.0
+        - 0.0
+        - 1.0
+        n_embeds:
+        - 16384
+        - 16384
+        - 16384
+        - 16384
+        n_levels: 4
+        shared_codebook: True
+        embed_dim: 256
+        monitor: val/rec_loss
+        ddconfig:
+          double_z: false
+          z_channels: 256
+          resolution: 256
+          in_channels: 3
+          out_ch: 3
+          ch: 128
+          ch_mult:
+          - 1
+          - 2
+          - 2
+          - 2
+          - 2
+          - 4
+          num_res_blocks: 2
+          attn_resolutions: []
+          dropout: 0.0
+        lossconfig:
+          target: taming.modules.losses.DummyLoss
+
+    cond_stage_config:
+      target: taming.modules.misc.coord.CoordStage
+      params:
+        n_embed: 4096
+        down_factor: 16
+
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 12
+    num_workers: 12
+    train:
+      target: taming.data.faceshq.FFHQTrain
+      params:
+        size: 256
+    validation:
+      target: taming.data.faceshq.FFHQValidation
+      params:
+        size: 256

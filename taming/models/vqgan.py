@@ -28,6 +28,7 @@ class VQModel(pl.LightningModule):
                  image_key="image",
                  colorize_nlabels=None,
                  monitor=None,
+                 ckpt_every_n_epochs=None,
                  batch_resize_range=None,
                  scheduler_config=None,
                  lr_g_factor=1.0,

@@ -31,6 +31,7 @@ class Net2NetTransformer(pl.LightningModule):
                  pkeep=1.0,
                  sos_token=0.,
                  unconditional=False,
+                 monitor=None,
                  ):
         super().__init__()
         self.be_unconditional = unconditional
@@ -48,6 +49,9 @@ class Net2NetTransformer(pl.LightningModule):
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
         self.downsample_cond_size = downsample_cond_size
         self.pkeep = pkeep
+        if monitor is not None:
+            self.monitor=monitor
+
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
@@ -382,6 +386,7 @@ class RVQTransformer (Net2NetTransformer):
                  z_codebook_level=0,
                  joint_training=False,
                  end_to_end_sampling=False,
+                 monitor=None,
                  ):
 
         #Adjust vocab size of transformer to that of the chosen codebook level
@@ -419,7 +424,8 @@ class RVQTransformer (Net2NetTransformer):
                  downsample_cond_size,
                  pkeep,
                  sos_token,
-                 unconditional)
+                 unconditional,
+                 monitor)
 
         self.sos_token=sos_token
 
@@ -872,6 +878,8 @@ class RVQDepthTransformer(RVQTransformer):
                  z_codebook_level=0,
                  joint_training=False,
                  end_to_end_sampling=False,
+                 monitor=None,
+                 attn_dropout=0.,
                  ):
         super().__init__(
                  transformer_config,
@@ -888,7 +896,8 @@ class RVQDepthTransformer(RVQTransformer):
                  unconditional,
                  z_codebook_level,
                  joint_training,
-                 end_to_end_sampling)
+                 end_to_end_sampling,
+                 monitor)
 
         del(self.transformer)
 
@@ -916,7 +925,8 @@ class RVQDepthTransformer(RVQTransformer):
                 spatial_layers = n_spatial_transf_layers,
                 depth_layers = n_depth_transf_layers,
                 dim_head = head_dim,
-                heads = n_heads)
+                heads = n_heads,
+                attn_dropout = attn_dropout)
 
     def get_all_quant_indices(self, x):
         pre_quant = self.first_stage_model.encode_to_prequant(x)
@@ -1078,7 +1088,7 @@ class RVQDepthTransformer(RVQTransformer):
 
         # create the pytorch optimizer object
         optim_groups = [
-            {"params": [param_dict[pn] for pn in sorted(list(decay))], "weight_decay": 0.01},
+            {"params": [param_dict[pn] for pn in sorted(list(decay))], "weight_decay": 0.0001},
             {"params": [param_dict[pn] for pn in sorted(list(no_decay))], "weight_decay": 0.0},
         ]
 
