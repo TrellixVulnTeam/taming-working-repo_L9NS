@@ -170,7 +170,7 @@ class ImageNetTrain(ImageNetBase):
                             if not is_within_directory(path, member_path):
                                 raise Exception("Attempted Path Traversal in Tar File")
                     
-                        tar.extractall(path, members, numeric_owner) 
+                        tar.extractall(path, members, numeric_owner=numeric_owner) 
                         
                     
                     safe_extract(tar, path=datadir)
@@ -197,7 +197,7 @@ class ImageNetTrain(ImageNetBase):
                                 if not is_within_directory(path, member_path):
                                     raise Exception("Attempted Path Traversal in Tar File")
                         
-                            tar.extractall(path, members, numeric_owner) 
+                            tar.extractall(path, members, numeric_owner=numeric_owner) 
                             
                         
                         safe_extract(tar, path=subdir)
@@ -266,7 +266,7 @@ class ImageNetValidation(ImageNetBase):
                             if not is_within_directory(path, member_path):
                                 raise Exception("Attempted Path Traversal in Tar File")
                     
-                        tar.extractall(path, members, numeric_owner) 
+                        tar.extractall(path, members, numeric_owner=numeric_owner) 
                         
                     
                     safe_extract(tar, path=datadir)
